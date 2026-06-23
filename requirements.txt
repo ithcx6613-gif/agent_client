@@ -1,0 +1,21 @@
+# Azure SDK
+azure-ai-projects>=2.2.0
+azure-identity>=1.25.2
+azure-core>=1.41.0
+
+# MCP & FastMCP
+fastmcp>=3.1.1
+mcp>=1.26.0
+
+# Web Framework
+flask>=3.0.0
+flask-cors>=4.0.0
+
+# Auth
+msal>=1.30.0
+python-dotenv>=1.0.0
+
+# HTTP Client (for Graph API calls in MCP Server)
+httpx>=0.27.0
+
+# Value store for OAuth clients (from python-mcp-demos)
