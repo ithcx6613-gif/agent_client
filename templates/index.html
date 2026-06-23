@@ -1,309 +1,532 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <title>Azure AI Foundry · OAuth 与 Agent</title>
-    <style>
-        .container { max-width: 800px; margin: 50px auto; padding: 20px; }
-        .section { margin-bottom: 28px; padding-bottom: 24px; border-bottom: 1px solid #eee; }
-        .section:last-of-type { border-bottom: none; }
-        .section h2 { font-size: 1.15rem; margin: 0 0 8px 0; }
-        .steps { color: #555; font-size: 0.9rem; margin: 0 0 14px 0; line-height: 1.5; }
-        .btn-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
-        .btn { padding: 10px 20px; background: #0078d4; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; }
-        .btn:disabled { background: #cccccc; cursor: not-allowed; }
-        .btn-secondary { background: #6c757d; }
-        .btn-secondary:hover:not(:disabled) { background: #5a6268; }
-        #chatResult { margin-top: 20px; padding: 12px; border: 1px solid #eee; min-height: 100px; white-space: pre-wrap; word-break: break-word; font-family: system-ui, sans-serif; font-size: 14px; }
-        .hidden { display: none; }
-        .error-tip { color: #dc3545; margin-top: 10px; }
-        .status-line { color: #198754; font-size: 0.88rem; margin-top: 10px; }
-        .status-line.warn { color: #856404; }
-        .status-line.expired { color: #dc3545; }
-        #messageInput { flex: 1; min-width: 200px; padding: 10px; box-sizing: border-box; }
-        .chat-input-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 12px; }
-        .chat-header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; gap: 12px; }
-        .chat-header h2 { margin: 0; }
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Azure AI Foundry · Agent 对话</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen,
+                   Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
+      background: #f5f5f5;
+      color: #1a1a1a;
+      height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    /* ---------- shared ---------- */
+    .card {
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 2px 16px rgba(0,0,0,.07);
+      padding: 48px 40px;
+      max-width: 440px;
+      width: 100%;
+      text-align: center;
+    }
+
+    .btn {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 11px 28px; border: none; border-radius: 6px;
+      font-size: 14px; font-weight: 500; cursor: pointer; line-height: 1.3;
+      transition: opacity .15s, box-shadow .15s, background .15s;
+    }
+    .btn:disabled { opacity: .5; cursor: not-allowed; }
+    .btn-primary  { background: #0078d4; color: #fff; }
+    .btn-primary:hover:not(:disabled) { box-shadow: 0 0 0 2px rgba(0,120,212,.3); }
+    .btn-outline  { background: transparent; color: #555; border: 1px solid #ccc; }
+    .btn-outline:hover:not(:disabled) { background: #f0f0f0; }
+    .btn-danger   { background: #d32f2f; color: #fff; }
+
+    .error-tip { color: #d32f2f; font-size: .85rem; margin-top: 14px; }
+    .error-tip.hidden { display: none; }
+
+    .hidden { display: none !important; }
+
+    /* ---------- step indicator ---------- */
+    .steps { display: flex; justify-content: center; gap: 8px; margin-bottom: 36px; }
+    .step {
+      display: flex; align-items: center; gap: 6px;
+      font-size: .78rem; color: #aaa;
+    }
+    .step .num {
+      width: 22px; height: 22px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: .72rem; font-weight: 600;
+      background: #eee; color: #aaa;
+      flex-shrink: 0;
+    }
+    .step.active { color: #0078d4; }
+    .step.active .num { background: #0078d4; color: #fff; }
+    .step.done { color: #2e7d32; }
+    .step.done .num { background: #2e7d32; color: #fff; }
+    .step-arrow { color: #ccc; font-size: .8rem; align-self: center; }
+
+    /* ---------- login screen ---------- */
+    #loginScreen {
+      display: flex; flex-direction: column; align-items: center; gap: 24px;
+      animation: fadeIn .35s ease;
+    }
+    #loginScreen.hidden { display: none; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+    .login-card h1 { font-size: 1.3rem; font-weight: 600; margin-bottom: 6px; }
+    .login-card .sub { color: #666; font-size: .88rem; margin-bottom: 30px; line-height: 1.5; }
+
+    /* ---------- redirecting overlay ---------- */
+    #redirectingOverlay {
+      position: fixed; inset: 0;
+      background: rgba(255,255,255,.92);
+      display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px;
+      z-index: 1000;
+      animation: fadeIn .25s ease;
+    }
+    #redirectingOverlay.hidden { display: none; }
+    .spinner {
+      width: 40px; height: 40px; border: 3px solid #e0e0e0; border-top-color: #0078d4;
+      border-radius: 50%; animation: spin .7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ---------- toast ---------- */
+    #successToast {
+      position: fixed; top: 24px; left: 50%; transform: translateX(-50%);
+      background: #2e7d32; color: #fff; padding: 12px 28px;
+      border-radius: 8px; font-size: .9rem; font-weight: 500;
+      box-shadow: 0 4px 16px rgba(46,125,50,.3); z-index: 999;
+      animation: slideDown .35s ease, fadeOut .4s 1.5s ease forwards;
+    }
+    #successToast.hidden { display: none; }
+    @keyframes slideDown { from { opacity: 0; transform: translateX(-50%) translateY(-20px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
+    @keyframes fadeOut { to { opacity: 0; transform: translateX(-50%) translateY(-16px); } }
+
+    /* ---------- chat shell ---------- */
+    #chatScreen {
+      display: flex; flex-direction: column;
+      height: 100vh; width: 100vw; max-width: 800px;
+    }
+    #chatScreen.hidden { display: none; }
+
+    .chat-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 20px; background: #fff; border-bottom: 1px solid #e0e0e0;
+    }
+    .chat-header h1 { font-size: 1rem; font-weight: 600; }
+    .chat-header .user-badge {
+      font-size: .8rem; color: #666;
+      max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .chat-header .header-actions { display: flex; gap: 8px; align-items: center; }
+
+    /* ---------- messages ---------- */
+    .chat-messages {
+      flex: 1; overflow-y: auto; padding: 20px;
+      display: flex; flex-direction: column; gap: 16px;
+      background: #f5f5f5;
+    }
+
+    .msg { display: flex; gap: 10px; max-width: 85%; }
+    .msg.user    { align-self: flex-end; flex-direction: row-reverse; }
+    .msg.assistant { align-self: flex-start; }
+
+    .msg .avatar {
+      width: 32px; height: 32px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: .75rem; font-weight: 600; flex-shrink: 0;
+    }
+    .msg.user .avatar      { background: #0078d4; color: #fff; }
+    .msg.assistant .avatar { background: #e0e0e0; color: #555; }
+
+    .msg .bubble {
+      padding: 10px 14px; border-radius: 14px;
+      font-size: .9rem; line-height: 1.5; white-space: pre-wrap; word-break: break-word;
+    }
+    .msg.user .bubble      { background: #0078d4; color: #fff; border-bottom-right-radius: 4px; }
+    .msg.assistant .bubble { background: #fff; border-bottom-left-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+
+    .msg .bubble .loading-dots { display: inline-flex; gap: 3px; }
+    .msg .bubble .loading-dots span {
+      width: 7px; height: 7px; background: #888; border-radius: 50%;
+      animation: dot-pulse 1.2s infinite ease-in-out;
+    }
+    .msg .bubble .loading-dots span:nth-child(2) { animation-delay: .2s; }
+    .msg .bubble .loading-dots span:nth-child(3) { animation-delay: .4s; }
+    @keyframes dot-pulse {
+      0%, 80%, 100% { opacity: .4; transform: scale(.8); }
+      40% { opacity: 1; transform: scale(1); }
+    }
+
+    /* ---------- input ---------- */
+    .chat-input {
+      display: flex; gap: 8px; padding: 14px 20px;
+      background: #fff; border-top: 1px solid #e0e0e0;
+    }
+    .chat-input textarea {
+      flex: 1; resize: none; border: 1px solid #ddd; border-radius: 8px;
+      padding: 10px 12px; font-size: .9rem; font-family: inherit;
+      outline: none; transition: border-color .15s;
+      min-height: 44px; max-height: 120px; line-height: 1.4;
+    }
+    .chat-input textarea:focus { border-color: #0078d4; }
+    .chat-input button { align-self: flex-end; padding: 10px 20px; white-space: nowrap; }
+
+    /* ---------- scrollbar ---------- */
+    .chat-messages::-webkit-scrollbar { width: 6px; }
+    .chat-messages::-webkit-scrollbar-thumb { background: #ccc; border-radius: 3px; }
+    .chat-messages::-webkit-scrollbar-track { background: transparent; }
+  </style>
 </head>
 <body>
-    <div class="container">
-        <h1 style="font-size: 1.35rem; font-weight: 600; margin-bottom: 24px;">OAuth 登录与 Agent 对话</h1>
 
-        <!-- ① OAuth -->
-        <div id="authSection" class="section">
-            <h2>① OAuth 登录</h2>
-            <p class="steps">点击下方按钮将跳转到 Azure 登录页；授权成功后浏览器会回到本站，并自动保存访问令牌（需与本站<strong>同源</strong>打开页面，以便携带 Session Cookie）。</p>
-            <div class="btn-row">
-                <button type="button" id="authBtn" class="btn">跳转到 Azure 授权</button>
-            </div>
-            <p id="authTip" style="color: #666; margin-top: 10px; font-size: 0.9rem;">若曾登录过，可直接进入下方 Agent 区域；令牌失效时请重新授权。</p>
-            <p id="authError" class="error-tip hidden"></p>
-        </div>
+  <!-- ====== Login Screen ====== -->
+  <div id="loginScreen">
+    <div class="card login-card">
+      <!-- Step indicator -->
+      <div class="steps">
+        <div class="step active" id="step1"><span class="num">1</span> 授权</div>
+        <span class="step-arrow">→</span>
+        <div class="step" id="step2"><span class="num">2</span> 登录</div>
+        <span class="step-arrow">→</span>
+        <div class="step" id="step3"><span class="num">3</span> 对话</div>
+      </div>
 
-        <!-- ② Agent -->
-        <div id="chatSection" class="section hidden">
-            <div class="chat-header">
-                <div>
-                    <h2>② 调用 Agent</h2>
-                    <p class="steps" style="margin-bottom: 0;">输入问题后发送，请求将携带 Bearer Token 调用后端 <code>/api/ai/chat</code>。</p>
-                </div>
-                <button type="button" id="reloginBtn" class="btn btn-secondary">清除登录并重新授权</button>
-            </div>
-            <p id="authStatusLine" class="status-line" aria-live="polite"></p>
-            <div class="chat-input-row">
-                <input type="text" id="messageInput" placeholder="输入你的问题后按 Enter 或点发送" autocomplete="off">
-                <button type="button" id="sendBtn" class="btn">发送</button>
-            </div>
-            <div id="chatResult"></div>
-        </div>
+      <h1>Azure AI Foundry</h1>
+      <p class="sub">通过 Microsoft OAuth 登录后，即可与 AI Foundry Agent 对话。</p>
+
+      <button type="button" id="authBtn" class="btn btn-primary">
+        <svg width="18" height="18" viewBox="0 0 21 21" fill="none">
+          <rect x="1" y="1" width="8" height="8" fill="#f25022"/>
+          <rect x="12" y="1" width="8" height="8" fill="#7fba00"/>
+          <rect x="1" y="12" width="8" height="8" fill="#00a4ef"/>
+          <rect x="12" y="12" width="8" height="8" fill="#ffb900"/>
+        </svg>
+        使用 Microsoft 账号登录
+      </button>
+
+      <p class="desc" style="margin-top: 24px; color: #888; font-size: .78rem; line-height: 1.6; text-align: left;">
+        <strong style="color: #555;">授权流程说明：</strong><br>
+        1. 点击上方按钮后，将跳转至 Microsoft 登录页面。<br>
+        2. 使用你的 Microsoft 账号（工作/学校/个人）完成登录并同意授权。<br>
+        3. 授权成功后自动跳转回本应用，进入对话界面。
+      </p>
+
+      <p id="authError" class="error-tip hidden"></p>
+    </div>
+  </div>
+
+  <!-- ====== Redirecting Overlay ====== -->
+  <div id="redirectingOverlay" class="hidden">
+    <div class="spinner"></div>
+    <p style="font-size: .95rem; color: #333; font-weight: 500;">正在跳转到 Microsoft 登录页面…</p>
+    <p style="font-size: .8rem; color: #888;">登录完成后将自动返回此页面</p>
+  </div>
+
+  <!-- ====== Success Toast ====== -->
+  <div id="successToast" class="hidden">登录成功！</div>
+
+  <!-- ====== Chat Screen ====== -->
+  <div id="chatScreen" class="hidden">
+    <div class="chat-header">
+      <div>
+        <h1>AI Foundry Agent</h1>
+        <div id="userBadge" class="user-badge"></div>
+      </div>
+      <div class="header-actions">
+        <button type="button" id="diagBtn" class="btn btn-outline" style="font-size:.8rem">检查 Agent</button>
+        <button type="button" id="logoutBtn" class="btn btn-outline">退出登录</button>
+      </div>
     </div>
 
-    <script>
-        // 默认与当前页面同源（推荐：与 Flask 同域，Session 才能生效）。
-        // 若前端与 API 分离部署，可改为例如 "http://localhost:5000"（需配置 CORS 与 Cookie 域）。
-        const BACKEND_BASE_URL = "";
+    <div id="messageList" class="chat-messages">
+      <!-- rendered by JS -->
+    </div>
 
-        const LS_TOKEN = "azure_access_token";
-        const LS_EXPIRES = "azure_token_expires_at";
-        const LS_TOKEN_TYPE = "azure_token_type";
+    <div class="chat-input">
+      <textarea id="messageInput" placeholder="输入你的问题…" rows="1" autocomplete="off"></textarea>
+      <button type="button" id="sendBtn" class="btn btn-primary" disabled>发送</button>
+    </div>
+  </div>
 
-        let accessToken = "";
+  <script>
+    // ----------------------------------------------------------------
+    //  State
+    // ----------------------------------------------------------------
+    let loggedIn = false;
+    let sending = false;
+    const messages = [];
 
-        function apiUrl(path) {
-            const p = path.startsWith("/") ? path : "/" + path;
-            const base = String(BACKEND_BASE_URL || "").replace(/\/$/, "");
-            return base ? base + p : p;
+    // ----------------------------------------------------------------
+    //  DOM refs
+    // ----------------------------------------------------------------
+    const $ = (id) => document.getElementById(id);
+    const loginScreen      = $("loginScreen");
+    const chatScreen       = $("chatScreen");
+    const redirectOverlay  = $("redirectingOverlay");
+    const successToast     = $("successToast");
+    const authBtn          = $("authBtn");
+    const authError        = $("authError");
+    const logoutBtn        = $("logoutBtn");
+    const messageList      = $("messageList");
+    const messageInput     = $("messageInput");
+    const sendBtn          = $("sendBtn");
+    const userBadge        = $("userBadge");
+    const step1            = $("step1");
+    const step2            = $("step2");
+    const step3            = $("step3");
+    const authErrorMsg     = $("authError");
+
+    // ----------------------------------------------------------------
+    //  Helpers
+    // ----------------------------------------------------------------
+    function escapeHtml(s) {
+      const d = document.createElement("div");
+      d.textContent = s;
+      return d.innerHTML;
+    }
+
+    function autoResize(textarea) {
+      textarea.style.height = "auto";
+      textarea.style.height = Math.min(textarea.scrollHeight, 120) + "px";
+    }
+
+    function scrollToBottom() {
+      messageList.scrollTop = messageList.scrollHeight;
+    }
+
+    // ----------------------------------------------------------------
+    //  Render messages
+    // ----------------------------------------------------------------
+    function renderMessages() {
+      messageList.innerHTML = messages.map((m) => {
+        const isUser = m.role === "user";
+        const avatar = isUser ? "U" : "AI";
+        const content = m.loading
+          ? '<span class="loading-dots"><span></span><span></span><span></span></span>'
+          : escapeHtml(m.content);
+        return `<div class="msg ${isUser ? "user" : "assistant"}">
+          <div class="avatar">${avatar}</div>
+          <div class="bubble">${content}</div>
+        </div>`;
+      }).join("");
+      scrollToBottom();
+    }
+
+    function addMessage(role, content) {
+      messages.push({ role, content, loading: false });
+      renderMessages();
+    }
+
+    function updateLastMessage(content) {
+      if (messages.length > 0) {
+        messages[messages.length - 1].content = content;
+        messages[messages.length - 1].loading = false;
+        renderMessages();
+      }
+    }
+
+    function setLastLoading() {
+      if (messages.length > 0) {
+        messages[messages.length - 1].loading = true;
+        renderMessages();
+      }
+    }
+
+    // ----------------------------------------------------------------
+    //  Auth UI
+    // ----------------------------------------------------------------
+    function updateSteps(active) {
+      [step1, step2, step3].forEach((el, i) => {
+        el.classList.remove("active", "done");
+        if (i + 1 < active) el.classList.add("done");
+        else if (i + 1 === active) el.classList.add("active");
+      });
+    }
+
+    async function checkAuthStatus() {
+      try {
+        const res = await fetch("/auth/status", { credentials: "include" });
+        const body = await res.json();
+        if (body.code === 200 && body.data.logged_in) {
+          loggedIn = true;
+          const user = body.data.user || {};
+          const name = user.name || user.email || "已登录";
+          userBadge.textContent = name;
+          showSuccessAndChat();
+          return;
         }
+      } catch (_) { /* offline or sandbox - show login */ }
+      showLoginUI();
+    }
 
-        function escapeHtml(s) {
-            return String(s)
-                .replace(/&/g, "&amp;")
-                .replace(/</g, "&lt;")
-                .replace(/>/g, "&gt;")
-                .replace(/"/g, "&quot;");
+    function showLoginUI() {
+      updateSteps(1);
+      loginScreen.classList.remove("hidden");
+      chatScreen.classList.add("hidden");
+      redirectOverlay.classList.add("hidden");
+    }
+
+    function showSuccessAndChat() {
+      // Show success toast briefly
+      successToast.classList.remove("hidden");
+      setTimeout(() => successToast.classList.add("hidden"), 2000);
+
+      updateSteps(3);
+      loginScreen.classList.add("hidden");
+      chatScreen.classList.remove("hidden");
+
+      if (messages.length === 0) {
+        addMessage("assistant", "你好！OAuth 授权已完成。请问有什么问题？");
+      }
+      messageInput.disabled = false;
+      sendBtn.disabled = false;
+      messageInput.focus();
+    }
+
+    // ----------------------------------------------------------------
+    //  Login flow
+    // ----------------------------------------------------------------
+    authBtn.addEventListener("click", function () {
+      if (this.disabled) return;
+      updateSteps(2);
+      redirectOverlay.classList.remove("hidden");
+      authError.classList.add("hidden");
+      window.location.href = "/auth/login";
+    });
+
+    // ----------------------------------------------------------------
+    //  Logout
+    // ----------------------------------------------------------------
+    logoutBtn.addEventListener("click", async function () {
+      try {
+        await fetch("/auth/logout", { method: "POST", credentials: "include" });
+      } catch (_) {}
+      loggedIn = false;
+      messages.length = 0;
+      redirectOverlay.classList.add("hidden");
+      successToast.classList.add("hidden");
+      showLoginUI();
+    });
+
+    // ----------------------------------------------------------------
+    //  Diagnostics
+    // ----------------------------------------------------------------
+    const diagBtn = document.getElementById("diagBtn");
+    diagBtn.addEventListener("click", async function () {
+      if (!loggedIn) return;
+      this.disabled = true;
+      this.textContent = "检查中…";
+      addMessage("assistant", "正在检查 Agent 配置和连接状态…");
+
+      try {
+        const res = await fetch("/api/agent/check", {
+          credentials: "include",
+        });
+        const body = await res.json();
+
+        let diagHtml = "**Agent 诊断结果**\n\n";
+        if (body.code === 200) {
+          diagHtml += "✅ Agent 连接正常\n";
+          diagHtml += "  - Agent: " + (body.data.agent_info.name || "(unknown)") + "\n";
+          diagHtml += "  - 版本: " + (body.data.agent_info.version || "N/A") + "\n";
+          diagHtml += "  - 状态: " + (body.data.agent_info.status || "N/A") + "\n";
+          diagHtml += "  - 端点: " + body.data.endpoint + "\n";
+          diagHtml += "  - Agent名称: " + (body.data.agent_name || "N/A") + "\n";
+          diagHtml += "  - Agent版本: " + (body.data.agent_version || "latest");
+        } else {
+          diagHtml += "❌ Agent 连接失败\n";
+          diagHtml += "  - 错误类型: " + (body.data.error_type || "N/A") + "\n";
+          diagHtml += "  - 错误详情: " + (body.data.error_detail || body.msg || "未知错误") + "\n";
+          diagHtml += "  - 端点: " + (body.data.endpoint || "N/A") + "\n";
+          diagHtml += "  - Agent名称: " + (body.data.agent_name || "N/A") + "\n";
+          diagHtml += "  - Agent版本: " + (body.data.agent_version || "latest");
         }
+        updateLastMessage(diagHtml);
+      } catch (err) {
+        updateLastMessage("诊断失败：" + err.message);
+      } finally {
+        this.disabled = false;
+        this.textContent = "检查 Agent";
+      }
+    });
 
-        function formatAiReply(data) {
-            if (data === null || data === undefined) return "AI 回复为空";
-            if (typeof data === "string") return escapeHtml(data);
-            return escapeHtml(JSON.stringify(data, null, 2));
-        }
+    // ----------------------------------------------------------------
+    //  Send message
+    // ----------------------------------------------------------------
+    async function sendMessage() {
+      const text = messageInput.value.trim();
+      if (!text || sending || !loggedIn) return;
 
-        function persistTokenMeta(expiresInStr, tokenType) {
-            if (expiresInStr != null && expiresInStr !== "") {
-                const sec = parseInt(expiresInStr, 10);
-                if (!isNaN(sec) && sec > 0) {
-                    localStorage.setItem(LS_EXPIRES, String(Date.now() + sec * 1000));
-                }
-            }
-            if (tokenType) {
-                localStorage.setItem(LS_TOKEN_TYPE, tokenType);
-            }
-        }
+      sending = true;
+      sendBtn.disabled = true;
+      messageInput.disabled = true;
 
-        function updateAuthStatusDisplay() {
-            const el = document.getElementById("authStatusLine");
-            if (!el) return;
-            const expMs = localStorage.getItem(LS_EXPIRES);
-            const ttype = localStorage.getItem(LS_TOKEN_TYPE);
-            if (!accessToken) {
-                el.textContent = "";
-                el.className = "status-line";
-                return;
-            }
-            let line = "已登录";
-            if (ttype) line += " · 类型 " + ttype;
-            if (expMs) {
-                const t = parseInt(expMs, 10);
-                if (!isNaN(t)) {
-                    const d = new Date(t);
-                    line += " · 约 " + d.toLocaleString("zh-CN") + " 过期";
-                    el.className = "status-line" + (Date.now() > t ? " expired" : "");
-                    if (Date.now() > t) line += "（已过期，请重新授权）";
-                }
-            } else {
-                el.className = "status-line warn";
-                line += " · 未记录过期时间（刷新后若失败请重新授权）";
-            }
-            el.textContent = line;
-        }
+      addMessage("user", text);
+      addMessage("assistant", "");
+      setLastLoading();
+      messageInput.value = "";
+      autoResize(messageInput);
 
-        function switchToChatSection() {
-            document.getElementById("authSection").classList.add("hidden");
-            document.getElementById("chatSection").classList.remove("hidden");
-            updateAuthStatusDisplay();
-        }
-
-        function switchToAuthSection() {
-            document.getElementById("authSection").classList.remove("hidden");
-            document.getElementById("chatSection").classList.add("hidden");
-        }
-
-        function clearLoginState() {
-            accessToken = "";
-            localStorage.removeItem(LS_TOKEN);
-            localStorage.removeItem(LS_EXPIRES);
-            localStorage.removeItem(LS_TOKEN_TYPE);
-        }
-
-        function handleUnauthorized(message) {
-            clearLoginState();
-            switchToAuthSection();
-            const authError = document.getElementById("authError");
-            authError.textContent = message || "登录已失效，请重新授权";
-            authError.classList.remove("hidden");
-        }
-
-        window.onload = function() {
-            const urlParams = new URLSearchParams(window.location.search);
-            const authError = document.getElementById("authError");
-
-            const error = urlParams.get("error");
-            if (error) {
-                authError.textContent = "授权失败：" + decodeURIComponent(error);
-                authError.classList.remove("hidden");
-                window.history.replaceState({}, document.title, window.location.pathname);
-            }
-
-            const token = urlParams.get("access_token");
-            if (token) {
-                accessToken = token;
-                localStorage.setItem(LS_TOKEN, token);
-                const expiresIn = urlParams.get("expires_in");
-                const tokenType = urlParams.get("token_type");
-                persistTokenMeta(expiresIn, tokenType);
-                switchToChatSection();
-                window.history.replaceState({}, document.title, window.location.pathname);
-                return;
-            }
-
-            const storedToken = localStorage.getItem(LS_TOKEN);
-            if (storedToken) {
-                accessToken = storedToken;
-                switchToChatSection();
-            }
-        };
-
-        const authBtn = document.getElementById("authBtn");
-        const defaultAuthLabel = authBtn.textContent;
-
-        authBtn.addEventListener("click", async function() {
-            const authError = document.getElementById("authError");
-            if (authBtn.disabled) return;
-            authBtn.disabled = true;
-            authBtn.textContent = "正在获取授权地址…";
-            authError.classList.add("hidden");
-
-            try {
-                const response = await fetch(apiUrl("/auth/url"), {
-                    method: "GET",
-                    credentials: "include"
-                });
-
-                if (!response.ok) throw new Error("HTTP " + response.status);
-                const result = await response.json();
-
-                if (result.code === 200 && result.data && result.data.auth_url) {
-                    window.location.href = result.data.auth_url;
-                    return;
-                }
-                authError.textContent = "获取授权 URL 失败：" + (result.msg || "未知错误");
-                authError.classList.remove("hidden");
-            } catch (err) {
-                authError.textContent = "网络错误：" + err.message;
-                authError.classList.remove("hidden");
-            } finally {
-                authBtn.disabled = false;
-                authBtn.textContent = defaultAuthLabel;
-            }
+      try {
+        const res = await fetch("/api/ai/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ messages: [{ role: "user", content: text }] }),
         });
 
-        document.getElementById("reloginBtn").addEventListener("click", function() {
-            clearLoginState();
-            switchToAuthSection();
-            document.getElementById("authError").classList.add("hidden");
-            document.getElementById("chatResult").innerHTML = "";
-        });
+        const body = await res.json();
 
-        async function sendChatMessage() {
-            const messageInput = document.getElementById("messageInput");
-            const message = messageInput.value.trim();
-            const chatResult = document.getElementById("chatResult");
-            const sendBtn = document.getElementById("sendBtn");
-
-            if (!message) {
-                alert("请输入问题后再发送");
-                return;
-            }
-            if (!accessToken) {
-                alert("未获取到 Token，请先完成 OAuth 登录");
-                switchToAuthSection();
-                return;
-            }
-
-            chatResult.textContent = "AI 正在思考中…";
-            sendBtn.disabled = true;
-
-            try {
-                const response = await fetch(apiUrl("/api/ai/chat"), {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                        "Authorization": "Bearer " + accessToken
-                    },
-                    body: JSON.stringify({
-                        messages: [{ role: "user", content: message }],
-                        temperature: 0.7
-                    })
-                });
-
-                let result = null;
-                try {
-                    result = await response.json();
-                } catch (_) {
-                    result = null;
-                }
-
-                if (response.status === 401) {
-                    handleUnauthorized(result && result.msg ? result.msg : "未提供有效 Token（401）");
-                    return;
-                }
-                if (response.status === 403) {
-                    const msg = (result && result.msg) ? result.msg : "需要管理员同意或权限不足（403）";
-                    chatResult.innerHTML = "<span style=\"color:#dc3545;\">" + escapeHtml(msg) + "</span>";
-                    return;
-                }
-
-                if (!response.ok) {
-                    const msg = result && result.msg ? result.msg : ("HTTP " + response.status);
-                    chatResult.innerHTML = "<span style=\"color:#dc3545;\">" + escapeHtml(msg) + "</span>";
-                    return;
-                }
-
-                if (result && result.code === 200) {
-                    chatResult.innerHTML = "<strong>AI 回复</strong><br>" + formatAiReply(result.data);
-                } else if (result) {
-                    chatResult.innerHTML = "<span style=\"color:#dc3545;\">调用失败：" + escapeHtml(result.msg || "") + "</span>";
-                } else {
-                    chatResult.textContent = "无法解析响应";
-                }
-            } catch (err) {
-                chatResult.innerHTML = "<span style=\"color:#dc3545;\">网络/接口错误：" + escapeHtml(err.message) + "</span>";
-            } finally {
-                sendBtn.disabled = false;
-                messageInput.value = "";
-            }
+        if (res.status === 401) {
+          updateLastMessage("登录已过期，请重新登录。");
+          setTimeout(() => checkAuthStatus(), 1500);
+          return;
         }
 
-        document.getElementById("sendBtn").addEventListener("click", sendChatMessage);
+        if (body.code === 200) {
+          updateLastMessage(body.data || "(空回复)");
+        } else {
+          updateLastMessage("错误：" + (body.msg || "未知错误"));
+        }
+      } catch (err) {
+        updateLastMessage("网络错误：" + err.message);
+      } finally {
+        sending = false;
+        sendBtn.disabled = false;
+        messageInput.disabled = false;
+        messageInput.focus();
+      }
+    }
 
-        document.getElementById("messageInput").addEventListener("keydown", function(e) {
-            if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                sendChatMessage();
-            }
-        });
-    </script>
+    sendBtn.addEventListener("click", sendMessage);
+
+    messageInput.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+      }
+    });
+
+    messageInput.addEventListener("input", function () {
+      autoResize(this);
+    });
+
+    // ----------------------------------------------------------------
+    //  Init
+    // ----------------------------------------------------------------
+    // Check for error in URL (from callback)
+    const urlParams = new URLSearchParams(window.location.search);
+    const error = urlParams.get("error");
+    if (error) {
+      authErrorMsg.textContent = "授权失败：" + decodeURIComponent(error);
+      authErrorMsg.classList.remove("hidden");
+      window.history.replaceState({}, document.title, "/");
+    }
+
+    checkAuthStatus();
+  </script>
 </body>
 </html>
