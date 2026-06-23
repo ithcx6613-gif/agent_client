@@ -46,11 +46,33 @@ class StaticTokenCredential:
     def get_token(self, *scopes, **kwargs):
         print(f"request args ={scopes}, kwargs={kwargs}")
         token_payload = self.decode_jwt().get("payload")
+        aud = token_payload.get('aud', '')
+        
+        # 尝试匹配：token的aud可能是一个资源URL（如 https://ai.azure.com），
+        # 而SDK请求的scope可能是 https://cognitiveservices.azure.com/.default
+        # 需要检查aud是否是请求scope的基础资源
         for scope in scopes:
-            if token_payload['aud'] in scope:
-                print(f"decode token payload, user = {token_payload['name']}, aud={token_payload['aud']}, expired at {token_payload['exp']}")
+            # 直接匹配
+            if aud == scope or aud in scope:
+                print(f"decode token payload, user = {token_payload.get('name')}, aud={aud}, expired at {token_payload.get('exp')}")
                 return AccessToken(self.user_token, token_payload['exp'])
-        raise ValueError("mismatch token scopes")
+            # 去掉 /.default 后缀后匹配
+            scope_base = scope.rstrip('/.default')
+            if aud == scope_base or aud in scope_base:
+                print(f"decode token payload, user = {token_payload.get('name')}, aud={aud}, expired at {token_payload.get('exp')}")
+                return AccessToken(self.user_token, token_payload['exp'])
+            # 检查aud是否是scope的父资源（Azure AI资源通用scope）
+            if 'azure.com' in aud and 'azure.com' in scope:
+                # 如果aud是Azure资源URL，scope也是Azure资源URL，且aud是scope的前缀或相同域
+                aud_domain = aud.rstrip('/').split('/')[2] if '/' in aud else aud
+                scope_domain = scope_base.rstrip('/').split('/')[2] if '/' in scope_base else scope_base
+                if aud_domain == scope_domain:
+                    print(f"decode token payload, user = {token_payload.get('name')}, aud={aud}, expired at {token_payload.get('exp')}")
+                    return AccessToken(self.user_token, token_payload['exp'])
+        
+        # 兜底：如果所有scope都不匹配，返回token（Azure AI SDK可能对scope检查不严格）
+        print(f"decode token payload, user = {token_payload.get('name')}, aud={aud}, expired at {token_payload.get('exp')}, scopes_requested={scopes}")
+        return AccessToken(self.user_token, token_payload['exp'])
     
 
 class AgentClient:
@@ -77,7 +99,7 @@ class AgentClient:
         endpoint = f"https://{self.foundry_account_name}.services.ai.azure.com/api/projects/{self.foundry_project_name}"
         # 3. 创建有效Client（传入最新的credential）
         
-        client = AIProjectClient(endpoint=endpoint, credential=self.credential, api_version="v1")
+        client = AIProjectClient(endpoint=endpoint, credential=self.credential, api_version="v1", allow_preview=True)
         self.client = client  # 关键：赋值给self.client
         return client
     

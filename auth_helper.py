@@ -57,9 +57,11 @@ class AuthHelper:
             print(f"❌ 生成授权流失败：{auth_code_flow['error']} - {auth_code_flow['error_description']}")
             raise Exception(f"生成授权URL失败：{auth_code_flow['error_description']}")
 
-        # 关键修复3：强制存储flow到session（确保是flask的session）
+        # 关键修复3：存储完整flow到session（msal要求acquire_token_by_auth_code_flow需要完整dict）
         session["auth_code_flow"] = auth_code_flow
+        session.permanent = True  # 确保session持久化
         print(f"✅ 生成授权URL成功，state={auth_code_flow['state']}")
+        print(f"✅ Session已存储auth_code_flow，keys={list(session.keys())}")
         
         return auth_code_flow["auth_uri"]  # 仅返回授权URL，而非dict
         

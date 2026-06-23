@@ -11,6 +11,13 @@ CORS(app, supports_credentials=True)  # 新增：允许跨域，支持凭证
 # 重要：Flask的session密钥，用于存储auth_code_flow（防CSRF），生产环境需改为随机安全值
 app.secret_key = "123456"
 
+# 关键修复：确保session cookie在跨站重定向时也能发送
+# SameSite=None + Secure 允许跨站cookie，但生产环境需要HTTPS
+# 开发环境用 Lax（默认）通常够用，但显式设置更安全
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_REFRESH_EACH_REQUEST"] = True
+
 # -------------------------- 2. 生成授权URL（引导用户授权） --------------------------
 @app.route("/")
 def index():
@@ -82,7 +89,7 @@ def callback():
 
 @app.route("/api/ai/chat", methods=["POST"])
 def invoke_agent():
-    try:
+    # try:
         # 从请求头中提取Token
         auth_header = request.headers.get("Authorization")
         if not auth_header or not auth_header.startswith("Bearer "):
@@ -111,21 +118,21 @@ def invoke_agent():
             "msg": "成功获取Agent状态",
             "data": agent_status
         })
-    except Exception as e: 
-        print(f"访问Agent服务失败: {str(e)}")
-        # 检查是否需要管理员同意
-        if "consent_required" in str(e).lower():
-            print("错误提示：可能需要管理员同意某些权限")
-            return jsonify({
-                "code": 403,
-                "msg": "需要管理员同意相关权限",
-                "data": None
-            }), 403
-        return jsonify({
-            "code": 500,
-            "msg": f"调用Agent失败：{str(e)}",
-            "data": None
-        }), 500
+    # except Exception as e:
+    #     print(f"访问Agent服务失败: {str(e)}")
+    #     # 检查是否需要管理员同意
+    #     if "consent_required" in str(e).lower():
+    #         print("错误提示：可能需要管理员同意某些权限")
+    #         return jsonify({
+    #             "code": 403,
+    #             "msg": "需要管理员同意相关权限",
+    #             "data": None
+    #         }), 403
+    #     return jsonify({
+    #         "code": 500,
+    #         "msg": f"调用Agent失败：{str(e)}",
+    #         "data": None
+    #     }), 500
     
 
 
