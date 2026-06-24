@@ -143,16 +143,8 @@ def check_agent():
         print(f"[Diagnostics] Agent check OK: {info}")
         return jsonify({
             "code": 200,
-            "msg": "Agent 存在",
-            "data": {
-                "agent_name": os.getenv("AGENT_NAME"),
-                "agent_version": os.getenv("AGENT_VERSION", "latest"),
-                "endpoint": (
-                    f"https://{os.getenv('FOUNDRY_ACCOUNT_NAME')}.services.ai.azure.com"
-                    f"/api/projects/{os.getenv('FOUNDRY_PROJECT_NAME')}"
-                ),
-                "agent_info": info,
-            },
+            "msg": "Agent 配置正常",
+            "data": info,
         })
     except Exception as e:
         error_body = str(e)

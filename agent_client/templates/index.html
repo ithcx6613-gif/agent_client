@@ -178,7 +178,33 @@
     .chat-messages::-webkit-scrollbar { width: 6px; }
     .chat-messages::-webkit-scrollbar-thumb { background: #ccc; border-radius: 3px; }
     .chat-messages::-webkit-scrollbar-track { background: transparent; }
-  </style>
+  /* ---------- diagnostic panel ---------- */
+  .diag-panel {
+    background: #fff;
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    margin: 0 20px 6px 20px;
+    overflow: hidden;
+    flex-shrink: 0;
+  }
+  .diag-panel.hidden { display: none; }
+  .diag-header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 8px 14px; background: #f8f9fa; font-size: .85rem; font-weight: 600;
+    border-bottom: 1px solid #e0e0e0;
+  }
+  .diag-close {
+    background: none; border: none; font-size: 1.2rem; cursor: pointer;
+    line-height: 1; color: #888; padding: 2px 6px;
+  }
+  .diag-close:hover { color: #333; }
+  .diag-content {
+    margin: 0; padding: 12px 14px; font-size: .82rem;
+    line-height: 1.5; white-space: pre-wrap; word-break: break-word;
+    font-family: Menlo, Monaco, "Courier New", monospace;
+    color: #333;
+  }
+</style>
 </head>
 <body>
 
@@ -239,6 +265,15 @@
         <button type="button" id="diagBtn" class="btn btn-outline" style="font-size:.8rem">检查 Agent</button>
         <button type="button" id="logoutBtn" class="btn btn-outline">退出登录</button>
       </div>
+    </div>
+
+    <!-- diagnostic result panel (hidden by default) -->
+    <div id="diagPanel" class="diag-panel hidden">
+      <div class="diag-header">
+        <span>Agent 诊断结果</span>
+        <button type="button" id="diagCloseBtn" class="diag-close">&times;</button>
+      </div>
+      <pre id="diagContent" class="diag-content"></pre>
     </div>
 
     <div id="messageList" class="chat-messages">
@@ -412,49 +447,56 @@
     });
 
     // ----------------------------------------------------------------
-    //  Diagnostics
+    // ----------------------------------------------------------------
+    //  Diagnostics — shown in a dedicated panel, not as chat messages
     // ----------------------------------------------------------------
     const diagBtn = document.getElementById("diagBtn");
+    const diagPanel = document.getElementById("diagPanel");
+    const diagContent = document.getElementById("diagContent");
+    const diagCloseBtn = document.getElementById("diagCloseBtn");
+
     diagBtn.addEventListener("click", async function () {
       if (!loggedIn) return;
       this.disabled = true;
       this.textContent = "检查中…";
-      addMessage("assistant", "正在检查 Agent 配置和连接状态…");
+      diagPanel.classList.remove("hidden");
+      diagContent.textContent = "正在检查 Agent 配置和连接状态…";
 
       try {
         const res = await fetch("/api/agent/check", {
           credentials: "include",
         });
         const body = await res.json();
-
-        let diagHtml = "**Agent 诊断结果**\n\n";
+        let text = "";
         if (body.code === 200) {
-          diagHtml += "✅ Agent 连接正常\n";
-          diagHtml += "  - Agent: " + (body.data.agent_info.name || "(unknown)") + "\n";
-          diagHtml += "  - 版本: " + (body.data.agent_info.version || "N/A") + "\n";
-          diagHtml += "  - 状态: " + (body.data.agent_info.status || "N/A") + "\n";
-          diagHtml += "  - 端点: " + body.data.endpoint + "\n";
-          diagHtml += "  - Agent名称: " + (body.data.agent_name || "N/A") + "\n";
-          diagHtml += "  - Agent版本: " + (body.data.agent_version || "latest");
+          const d = body.data;
+          text = "✅ Agent 连接正常\n";
+          text += "  Agent名称: " + (d.agent_name || "N/A") + "\n";
+          text += "  Agent版本: " + (d.agent_version || "latest") + "\n";
+          text += "  端点: " + (d.project_endpoint || "N/A") + "\n";
+          if (d.agent_endpoint) text += "  Agent端点: " + d.agent_endpoint + "\n";
+        } else if (body.data && body.data.error_detail) {
+          text = "❌ Agent 连接失败\n";
+          text += "  错误类型: " + (body.data.error_type || "N/A") + "\n";
+          text += "  错误详情: " + body.data.error_detail + "\n";
+          text += "  端点: " + (body.data.endpoint || "N/A") + "\n";
         } else {
-          diagHtml += "❌ Agent 连接失败\n";
-          diagHtml += "  - 错误类型: " + (body.data.error_type || "N/A") + "\n";
-          diagHtml += "  - 错误详情: " + (body.data.error_detail || body.msg || "未知错误") + "\n";
-          diagHtml += "  - 端点: " + (body.data.endpoint || "N/A") + "\n";
-          diagHtml += "  - Agent名称: " + (body.data.agent_name || "N/A") + "\n";
-          diagHtml += "  - Agent版本: " + (body.data.agent_version || "latest");
+          text = "❌ 请求失败: " + (body.msg || "未知错误");
         }
-        updateLastMessage(diagHtml);
+        diagContent.textContent = text;
       } catch (err) {
-        updateLastMessage("诊断失败：" + err.message);
+        diagContent.textContent = "诊断失败: " + err.message;
       } finally {
         this.disabled = false;
         this.textContent = "检查 Agent";
       }
     });
 
-    // ----------------------------------------------------------------
-    //  Send message
+    diagCloseBtn.addEventListener("click", function () {
+      diagPanel.classList.add("hidden");
+    });
+
+    //  Send message    //  Send message
     // ----------------------------------------------------------------
     async function sendMessage() {
       const text = messageInput.value.trim();
