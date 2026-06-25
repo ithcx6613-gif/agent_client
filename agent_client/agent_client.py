@@ -55,6 +55,7 @@ class AgentClient:
         self.agent_name = os.getenv("AGENT_NAME")
         self._user_token = None
         self._project_client: Optional[AIProjectClient] = None
+        self._latest_version: Optional[str] = None
 
     def set_token(self, user_token: str) -> None:
         self._user_token = user_token
@@ -78,7 +79,7 @@ class AgentClient:
     def check_agent_exists(self) -> dict:
         return {
             "agent_name": self.agent_name or "N/A",
-            "agent_version": os.getenv("AGENT_VERSION", "latest"),
+            "agent_version": self._versions()[0],
             "project_endpoint": self._project_url("openai/v1"),
             "agent_endpoint": self._agent_url(),
         }
@@ -153,13 +154,51 @@ class AgentClient:
             f"agents/{self.agent_name}/endpoint/protocols/openai"
         )
 
-    @staticmethod
-    def _versions() -> list:
-        v = os.getenv("AGENT_VERSION", "latest")
+    def _versions(self) -> list:
+        """Return a list of version strings to try, best-first.
+
+        If AGENT_VERSION is explicitly set in the environment, use it directly.
+        Otherwise, query Azure AI Foundry for the actual latest version of the
+        configured agent.  Results are cached on the instance.
+        """
+        v = os.getenv("AGENT_VERSION")
+        if v:
+            return [v, "latest"]
+
+        if self._latest_version is None:
+            self._latest_version = self._fetch_latest_version()
+        v = self._latest_version
         versions = [v]
         if v != "latest":
             versions.append("latest")
         return versions
+
+    def _fetch_latest_version(self) -> str:
+        """Query the latest active version of the agent via the SDK.
+
+        Filters for active versions only — versions in creating/failed/deleted
+        status are skipped.  Results are not paginated beyond the first page
+        since most agents have few active versions.
+        """
+        if not self._project_client or not self.agent_name:
+            print("[AgentClient] No project client or agent name — falling back to 'latest'")
+            return "latest"
+        try:
+            versions = list(
+                self._project_client.agents.list_versions(
+                    agent_name=self.agent_name,
+                    order="desc",
+                    limit=50,
+                )
+            )
+            for v in versions:
+                if getattr(v, "status", None) == "active":
+                    print(f"[AgentClient] Resolved latest active version: {v.version}")
+                    return v.version
+            print("[AgentClient] No active version found — falling back to 'latest'")
+        except Exception as e:
+            print(f"[AgentClient] Failed to fetch latest version: {e}")
+        return "latest"
 
     @staticmethod
     def _error_detail(exc: Exception) -> str:
@@ -176,17 +215,65 @@ class AgentClient:
 
     @staticmethod
     def _extract(response) -> str:
-        output_text = getattr(response, "output_text", None)
-        if output_text:
-            return output_text
+        """Extract text from a Responses API response object.
+
+        Tries several strategies:
+        1. The response.output_text convenience property (only matches
+           content.type == "output_text").
+        2. Manual iteration of all output items handles non-standard
+           content types (e.g. Azure AI Foundry may return type="text"
+           instead of "output_text").
+        3. Debug dump when nothing yields text, so we can see the actual
+           response structure.
+        """
+        # --- Strategy 1: use the SDK output_text property
+        try:
+            text = response.output_text
+            if text and text.strip():
+                return text
+        except Exception:
+            pass
+
+        # --- Strategy 2: manually walk output -> message -> content -> text
         if hasattr(response, "output") and response.output:
+            texts = []
             for item in response.output:
-                if getattr(item, "type", None) == "message":
-                    content = item.content
-                    if content:
-                        return (
-                            content[0].text
-                            if hasattr(content[0], "text")
-                            else str(content[0])
-                        )
+                item_type = getattr(item, "type", None) or "?"
+                if item_type == "message":
+                    content = getattr(item, "content", None) or []
+                    for cp in content:
+                        t = getattr(cp, "text", None)
+                        if t and isinstance(t, str):
+                            texts.append(t)
+
+                # Also try reasoning items which sometimes carry text
+                if item_type == "reasoning":
+                    content = getattr(item, "content", None) or []
+                    for cp in content:
+                        t = getattr(cp, "text", None)
+                        if t and isinstance(t, str):
+                            texts.append(t)
+
+            if texts:
+                return "".join(texts)
+
+        # --- Debug dump -- log the actual response structure
+        print("[AgentClient] _extract: no text found -- response structure:")
+        print(f"  type= {type(response).__name__}")
+        print(f'  status= {getattr(response, "status", None)!r}')
+        print(f'  err= {getattr(response, "error", None)!r}')
+        output = getattr(response, "output", None)
+        print(f"  output= {type(output).__name__} len={len(output) if output else 0}")
+        if output:
+            for i, item in enumerate(output):
+                it = getattr(item, "type", None) or "?"
+                print(f"    [{i}] type={it!r} item_type={type(item).__name__}")
+                if hasattr(item, "content"):
+                    for j, cp in enumerate(item.content):
+                        ct = getattr(cp, "type", None) or "?"
+                        print(f"        content[{j}] type={ct!r} cp_type={type(cp).__name__}")
+                        for field in ("text", "refusal", "output"):
+                            v = getattr(cp, field, None)
+                            if v is not None:
+                                print(f"          {field}={repr(v)[:200]}")
         return ""

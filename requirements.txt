@@ -1,3 +1,6 @@
+# Azure Functions
+azure-functions>=1.18.0
+
 # Azure SDK
 azure-ai-projects>=2.2.0
 azure-identity>=1.25.2

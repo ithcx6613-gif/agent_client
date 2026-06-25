@@ -6,13 +6,15 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Server-side store for OAuth code flows, keyed by state.
+# The full auth_code_flow dict is too large to fit in a Flask session cookie
+# (the auth_uri alone can exceed 2 KB, pushing past browser cookie limits).
+# Instead, we store the state in the session cookie and the full flow here.
+_auth_flow_store: dict[str, dict] = {}
+
 
 class AuthHelper:
-    """Manage OAuth 2.0 auth-code flow against Microsoft Entra ID.
-
-    The access token returned is scoped to https://ai.azure.com/.default
-    and can be passed to AgentClient for Azure AI Foundry API calls.
-    """
+    """Manage OAuth 2.0 auth-code flow against Microsoft Entra ID."""
 
     def __init__(self):
         self.tenant_id = os.getenv("TENANT_ID")
@@ -30,8 +32,9 @@ class AuthHelper:
     def interactive_login(self) -> str:
         """Initiate an auth-code flow and return the authorization URL.
 
-        The flow state is persisted in the Flask session for CSRF protection
-        and later exchanged in the callback handler.
+        The full auth_code_flow dict is stored server-side (keyed by state)
+        to avoid exceeding browser cookie size limits. Only the state is
+        stored in the Flask session for CSRF protection.
         """
         scopes = self.scope if isinstance(self.scope, list) else [self.scope]
         auth_code_flow = self.app.initiate_auth_code_flow(
@@ -45,7 +48,17 @@ class AuthHelper:
                 f"{auth_code_flow['error']} - {auth_code_flow.get('error_description', '')}"
             )
 
-        session["auth_code_flow"] = auth_code_flow
+        # Store the full flow server-side, keyed by state
+        state = auth_code_flow["state"]
+        _auth_flow_store[state] = auth_code_flow
+
+        # Only store the state in the session cookie (small, fits in 4 KB)
+        session["auth_flow_state"] = state
         session.permanent = True
-        print(f"[AuthHelper] Flow initiated, state={auth_code_flow['state']}")
+        print(f"[AuthHelper] Flow initiated, state={state}")
         return auth_code_flow["auth_uri"]
+
+    @staticmethod
+    def get_flow_for_state(state: str) -> dict | None:
+        """Retrieve and remove a stored auth code flow by state."""
+        return _auth_flow_store.pop(state, None)

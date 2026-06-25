@@ -1,0 +1,14 @@
+.git*
+__pycache__/
+*.py[cod]
+.venv/
+.idea/
+.vscode/
+*.egg-info/
+dist/
+build/
+*.md
+.env
+.env.*
+scripts/
+agent_client/

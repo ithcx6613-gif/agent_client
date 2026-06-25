@@ -1,0 +1,25 @@
+{
+  "version": "2.0",
+  "logging": {
+    "applicationInsights": {
+      "samplingSettings": {
+        "isEnabled": true,
+        "excludedTypes": "Request"
+      }
+    },
+    "logLevel": {
+      "default": "Information",
+      "mcp-server": "Information",
+      "mcp-server.auth": "Information"
+    }
+  },
+  "extensions": {
+    "http": {
+      "routePrefix": "",
+      "maxOutstandingRequests": 200,
+      "maxConcurrentConnections": 100,
+      "dynamicThrottlesEnabled": true
+    }
+  },
+  "functionTimeout": "00:10:00"
+}

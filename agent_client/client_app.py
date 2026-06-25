@@ -1,23 +1,64 @@
-from flask import Flask, request, session, jsonify, render_template, redirect
-from auth_helper import AuthHelper
-from agent_client import AgentClient
-from flask_cors import CORS
+"""Agent Client — Flask web app for Azure AI Foundry Agent."""
+
+import sys
 import os
-import secrets
+
+# Fix sys.path for direct script execution:
+# When `python agent_client/client_app.py` is run, sys.path[0] is set to the
+# script directory (agent_client/), which shadows the agent_client package.
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+_project_root = os.path.dirname(_script_dir)
+if sys.path and sys.path[0] == _script_dir:
+    sys.path[0] = _project_root
+elif _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
+# Absolute template path — Flask resolves template_folder relative to
+# root_path, which varies depending on how the script is invoked.  Using
+# an absolute path avoids that ambiguity.
+_template_dir = os.path.join(_script_dir, 'templates')
+
+# Persistent Flask secret key — if FLASK_SECRET_KEY is not set, store a
+# generated key in <project_root>/.flask_secret so it survives restarts.
+# This is critical: without it, the session cookie signed by the old key
+# becomes invalid every time debug-mode reloads the app, which destroys
+# the OAuth flow state between /auth/login and /callback.
+_secret_key_file = os.path.join(_project_root, '.flask_secret')
+_flask_secret_key = os.getenv('FLASK_SECRET_KEY')
+if not _flask_secret_key:
+    import secrets
+    if os.path.isfile(_secret_key_file):
+        with open(_secret_key_file) as f:
+            _flask_secret_key = f.read().strip()
+    else:
+        _flask_secret_key = secrets.token_hex(32)
+        with open(_secret_key_file, 'w') as f:
+            f.write(_flask_secret_key)
+
+from flask import Flask, request, session, jsonify, render_template, redirect
+from agent_client.auth_helper import AuthHelper
+from agent_client.agent_client import AgentClient
+from flask_cors import CORS
 
 # ---------------------------------------------------------------------------
 # App bootstrap
 # ---------------------------------------------------------------------------
-app = Flask(__name__)
+app = Flask(__name__, template_folder=_template_dir)
 CORS(app, supports_credentials=True)
 
-app.secret_key = os.getenv("FLASK_SECRET_KEY", secrets.token_hex(32))
+app.secret_key = _flask_secret_key
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_REFRESH_EACH_REQUEST"] = True
 app.config["PERMANENT_SESSION_LIFETIME"] = 3600  # 1 hour
 
-auth_helper = AuthHelper()
+_auth_helper = None
+
+def get_auth_helper():
+    global _auth_helper
+    if _auth_helper is None:
+        _auth_helper = AuthHelper()
+    return _auth_helper
 
 SESSION_TOKEN_KEY = "azure_access_token"
 SESSION_TOKEN_EXP = "azure_token_exp"
@@ -25,7 +66,7 @@ SESSION_USER_NAME = "azure_user_name"
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# User info helpers
 # ---------------------------------------------------------------------------
 def _user_info() -> dict | None:
     token = session.get(SESSION_TOKEN_KEY)
@@ -59,7 +100,7 @@ def index():
 def auth_login():
     """Redirect the browser directly to Microsoft's OAuth authorization page."""
     try:
-        auth_uri = auth_helper.interactive_login()
+        auth_uri = get_auth_helper().interactive_login()
         print(f"[Auth] Redirecting user to {auth_uri[:80]}...")
         return redirect(auth_uri)
     except Exception as e:
@@ -94,16 +135,18 @@ def callback():
     if not auth_code:
         return redirect("/?error=未获取到授权码")
 
-    auth_code_flow = session.get("auth_code_flow")
+    state = request.args.get("state")
+    auth_code_flow = AuthHelper.get_flow_for_state(state)
     if not auth_code_flow:
+        print(f"[Callback] No flow found for state={state} — possible key rotation on restart")
         return redirect("/?error=授权流程已过期，请重新点击授权按钮")
 
-    if request.args.get("state") != auth_code_flow.get("state"):
+    if state != auth_code_flow.get("state"):
         print("[Callback] State mismatch")
         return redirect("/?error=State验证失败，请重新授权")
 
     try:
-        result = auth_helper.app.acquire_token_by_auth_code_flow(
+        result = get_auth_helper().app.acquire_token_by_auth_code_flow(
             auth_code_flow=auth_code_flow,
             auth_response=request.args,
         )
@@ -197,7 +240,6 @@ def invoke_agent():
         print(f"[API] Agent reply ({len(reply)} chars)")
         return jsonify({"code": 200, "msg": "成功", "data": reply})
     except Exception as e:
-        # Capture as much detail as possible
         error_body = str(e)
         if hasattr(e, "response") and e.response is not None:
             try:

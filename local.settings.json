@@ -1,0 +1,24 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+    "FUNCTIONS_WORKER_PROCESS_COUNT": "1",
+
+    "MCP_AUTH_ENABLED": "false",
+    "TENANT_ID": "",
+    "MCP_SERVER_CLIENT_ID": "",
+    "MCP_AUTH_AUDIENCE": "",
+
+    "MCP_SERVER_HOST": "127.0.0.1",
+    "MCP_SERVER_PORT": "7071",
+    "MCP_TRANSPORT": "sse",
+
+    "FOUNDRY_ACCOUNT_NAME": "",
+    "FOUNDRY_PROJECT_NAME": ""
+  },
+  "Host": {
+    "CORS": "*",
+    "CORSCredentials": false
+  }
+}
