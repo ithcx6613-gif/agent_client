@@ -14,7 +14,7 @@ from mcp_server.config import cfg
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-    stream=sys.stdout,
+    stream=sys.stderr,
 )
 logger = logging.getLogger("mcp-server")
 
