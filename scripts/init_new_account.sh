@@ -57,6 +57,7 @@ SKIP_FOUNDRY=false
 SKIP_CONTAINER=false
 SKIP_FUNCTION=false
 SKIP_ENTRA=false
+SKIP_VAULT=false
 OBO_ENABLED=false
 AGENT_CLIENT_REDIRECT_URI="http://localhost:5000/callback"
 
@@ -72,6 +73,7 @@ while [[ $# -gt 0 ]]; do
     --skip-container-app) SKIP_CONTAINER=true; shift ;;
     --skip-function-app)  SKIP_FUNCTION=true; shift ;;
     --skip-entra)         SKIP_ENTRA=true; shift ;;
+    --skip-vault)         SKIP_VAULT=true; shift ;;
     --enable-obo)         OBO_ENABLED=true; shift ;;
     --redirect-uri)       AGENT_CLIENT_REDIRECT_URI="$2"; shift 2 ;;
     -h|--help)
@@ -676,6 +678,8 @@ EOF
   [[ -n "$AI_PROJECT_NAME" ]] && local_sed "FOUNDRY_PROJECT_NAME" "$AI_PROJECT_NAME" "$ENV_FILE"
   [[ -n "$AI_RG" ]] && local_sed "FOUNDRY_RESOURCE_GROUP" "$AI_RG" "$ENV_FILE"
   [[ -n "$AI_AGENT_ID" ]] && local_sed "AGENT_NAME" "$AI_AGENT_ID" "$ENV_FILE"
+  [[ -n "$VAULT_NAME" ]] && local_sed "VAULT_NAME" "$VAULT_NAME" "$ENV_FILE"
+  [[ -n "$VAULT_CONNECTION_NAME" ]] && local_sed "VAULT_CONNECTION_NAME" "$VAULT_CONNECTION_NAME" "$ENV_FILE"
   local_sed "REDIRECT_URI" "$AGENT_CLIENT_REDIRECT_URI" "$ENV_FILE"
 
   info "  ✅ .env 已生成 — $ENV_FILE"
@@ -686,6 +690,122 @@ EOF
   echo ""
   info "  并确保 AI Foundry 相关的 Agent Identity Blueprint 已配置："
   info "    AGENT_IDENTITY_BLUEPRINT_ID"
+fi
+
+# ═══════════════════════════════════════════════════════════════════
+# Phase 7: Vault & GitHub MCP Tool 配置
+# ═══════════════════════════════════════════════════════════════════
+
+VAULT_NAME=""
+VAULT_CONNECTION_NAME=""
+GITHUB_PAT_SECRET_NAME="github-pat"
+
+if ! $SKIP_VAULT; then
+  step "Phase 7: Vault & GitHub MCP Tool 配置"
+
+  # ---- 7a: Azure Key Vault ----
+  echo ""
+  info "7a. 创建 Azure Key Vault..."
+  VAULT_RG="${MCP_RG:-rg-mcp-server-${ENV_NAME}}"
+  VAULT_NAME="kv-mcp-${ENV_NAME}-$(echo $RANDOM | md5sum 2>/dev/null | head -c 4 || echo $RANDOM)"
+  VAULT_NAME=$(echo "$VAULT_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]//g' | cut -c1-24)
+
+  run_az keyvault create     --name "$VAULT_NAME"     --resource-group "$VAULT_RG"     --location "$LOCATION"     --enable-rbac-authorization false
+
+  info "  Key Vault: $VAULT_NAME (资源组: $VAULT_RG)"
+  echo ""
+
+  # ---- 7b: 存储 GitHub PAT ----
+  info "7b. 存储 GitHub Personal Access Token..."
+  info "  GitHub PAT 需要以下权限: Contents:Read, Issues:Read/Write, PullRequests:Read/Write, Metadata:Read"
+  echo ""
+
+  GITHUB_PAT=""
+  if ! $DRY_RUN; then
+    read -r -p "  输入 GitHub Personal Access Token（留空跳过，输入时不会显示）: " -s GITHUB_PAT_INPUT
+    echo ""
+    GITHUB_PAT="${GITHUB_PAT_INPUT:-}"
+    if [[ -n "$GITHUB_PAT" ]]; then
+      run_az keyvault secret set         --vault-name "$VAULT_NAME"         --name "$GITHUB_PAT_SECRET_NAME"         --value "$GITHUB_PAT"
+      info "  GitHub PAT 已存储: ${VAULT_NAME}/secrets/${GITHUB_PAT_SECRET_NAME}"
+    else
+      warn "  跳过。稍后可手动运行: az keyvault secret set --vault-name $VAULT_NAME --name $GITHUB_PAT_SECRET_NAME --value <token>"
+    fi
+  fi
+  echo ""
+
+  # ---- 7c: AI Foundry Connection ----
+  info "7c. 创建 AI Foundry Vault Connection..."
+  echo ""
+  info "  Key Vault URI: https://${VAULT_NAME}.vault.azure.net"
+  echo ""
+
+  # 尝试 REST API 自动创建
+  if ! $DRY_RUN && confirm_step "尝试通过 REST API 自动创建 AI Foundry Connection?"; then
+    if [[ -n "${AI_PROJECT_ENDPOINT:-}" && "${AI_PROJECT_ENDPOINT}" != "<"* ]]; then
+      info "  获取 Access Token..."
+      ACCESS_TOKEN=$(az account get-access-token --resource https://ai.azure.com --query accessToken -o tsv 2>/dev/null || echo "")
+      if [[ -n "$ACCESS_TOKEN" ]]; then
+        CONNECTION_NAME="kv-${VAULT_NAME}"
+        CONNECTION_PAYLOAD=$(cat <<CONEOF
+{
+  "properties": {
+    "name": "${CONNECTION_NAME}",
+    "category": "AzureKeyVault",
+    "target": "https://${VAULT_NAME}.vault.azure.net",
+    "authType": "ManagedIdentity",
+    "isShared": false,
+    "metadata": {
+      "resourceId": "/subscriptions/${AZ_SUBSCRIPTION_ID}/resourceGroups/${VAULT_RG}/providers/Microsoft.KeyVault/vaults/${VAULT_NAME}"
+    }
+  }
+}
+CONEOF
+)
+        CONNECTION_URL="${AI_PROJECT_ENDPOINT}/connections/${CONNECTION_NAME}?api-version=2025-01-01-preview"
+        info "  正在创建 Connection..."
+        HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PUT           -H "Authorization: Bearer ${ACCESS_TOKEN}"           -H "Content-Type: application/json"           -d "$CONNECTION_PAYLOAD"           "$CONNECTION_URL" 2>/dev/null || echo "000")
+        if [[ "$HTTP_STATUS" == "200" || "$HTTP_STATUS" == "201" ]]; then
+          info "  Connection 创建成功: ${CONNECTION_NAME}"
+          VAULT_CONNECTION_NAME="${CONNECTION_NAME}"
+        else
+          warn "  REST API 返回 ${HTTP_STATUS}。请在 Portal 中手动创建 Connection"
+          info "  配置步骤:"
+          info "    1. https://ai.azure.com → Project → Settings → Connections"
+          info "    2. + Create → Key Vault → 选择 ${VAULT_NAME}"
+        fi
+      else
+        warn "  无法获取 Access Token。请在 Portal 中手动创建 Connection"
+      fi
+    else
+      warn "  AI Project Endpoint 未配置。请在 Portal 中手动创建 Connection"
+    fi
+  fi
+
+  if $DRY_RUN; then
+    info "[DRY-RUN] 计划创建:"
+    echo "    Key Vault: ${VAULT_NAME}"
+    echo "    GitHub PAT: 交互式输入并存储"
+    echo "    AI Foundry Connection: REST API 或 Portal 引导"
+  fi
+  echo ""
+
+  # ---- 7d: GitHub MCP Tool 配置引导 ----
+  info "7d. 添加 GitHub MCP Tool 到 Agent (Portal 操作)"
+  echo ""
+  info "  在 https://ai.azure.com 门户中："
+  echo "    1. Project → Agents → 选中你的 Agent"
+  echo "    2. Tools 选项卡 → + Add → MCP tool"
+  echo "    3. Name: github-mcp"
+  echo "    4. Authentication: 选择 ${VAULT_CONNECTION_NAME:-kv-<vault-name>} 连接"
+  echo "    5. 凭证字段: 选择 ${GITHUB_PAT_SECRET_NAME}"
+  echo "    6. 保存并测试连通性"
+  echo ""
+  info "  常用 GitHub MCP 操作: 搜索仓库、CRUD Issue、PR 审查、读取文件"
+
+  info "  Vault & GitHub MCP Tool 配置完成"
+  info "    Key Vault:         ${VAULT_NAME}"
+  info "    Connection:        ${VAULT_CONNECTION_NAME:-<需在 Portal 创建>}"
 fi
 
 # ═══════════════════════════════════════════════════════════════════
@@ -763,15 +883,22 @@ echo "     - 打开 https://ai.azure.com"
 echo "     - 进入 Project → Agents → + Create"
 echo "     - 创建 Agent 并记录 Agent ID"
 echo ""
-echo "  2. MCP Tool 注册到 Agent："
-echo "     - 运行上面的 register_agent_tool.py 命令"
-echo "     - 或在 AI Foundry 门户中手动配置 Tool"
+echo "  2. AI Foundry Portal — Vault Connection（如果在 Phase 7 跳过了）："
+echo "     - Settings → Connections → + Create → Key Vault"
+echo "     - 选择 Phase 7 创建的 Key Vault: ${VAULT_NAME:-<vault-name>}"
 echo ""
-echo "  3. 确保 Agent Identity Blueprint 已配置："
+echo "  3. AI Foundry Portal — GitHub MCP Tool（如果在 Phase 7 跳过了）："
+echo "     - Agents → 选中 Agent → Tools → + Add → MCP tool"
+echo "     - 配置 GitHub 连接，使用 Vault 中的 PAT 凭证"
+echo ""
+echo "  4. MCP Tool 注册到 Agent（自托管 MCP Server）："
+echo "     - 运行上面的 register_agent_tool.py 命令"
+echo ""
+echo "  5. 确保 Agent Identity Blueprint 已配置："
 echo "     - AGENT_IDENTITY_BLUEPRINT_ID"
 echo "     - 参考 scripts/setup_agent_identity.py"
 echo ""
-echo "  4. 如果 App Registration 需要 Admin Consent："
+echo "  6. 如果 App Registration 需要 Admin Consent："
 echo "     - 在 Entra ID 门户中为 API 权限授予管理员同意"
 echo ""
 

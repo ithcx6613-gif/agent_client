@@ -37,13 +37,19 @@ Agent Client (Container App, :8080)
 AI Foundry Agent
    │
    ├─ MCP Tool 调用 (SSE) ──→ MCP Server (Function App)
-   │                           │
-   │                           ├─ hello_mcp / server_info
-   │                           ├─ save_snippet / get_snippet / list_snippets
-   │                           ├─ whoami / get_current_user (OBO → Graph)
-   │                           └─ batch_save_snippets
+   │                            │
+   │                            ├─ hello_mcp / server_info
+   │                            ├─ save_snippet / get_snippet / list_snippets
+   │                            ├─ whoami / get_current_user (OBO → Graph)
+   │                            └─ batch_save_snippets
    │
-   ├─ (User-Assigned MI) → Azure Container Registry / Storage
+   ├─ GitHub MCP Tool ──────→ GitHub API (在 Portal 中配置)
+   │    (via GitHub PAT / GitHub App, 凭证存储在 Vault)
+   │
+   ├─ (User-Assigned MI) ───→ Azure Container Registry / Storage
+   │
+   ├─ Vault ────────────────→ Azure Key Vault / AI Foundry Connection
+   │    (存储 GitHub PAT、API Key 等敏感凭证)
    │
    └─ (OBO Token Exchange) → Microsoft Graph API
 ```
@@ -73,7 +79,7 @@ bash scripts/init_new_account.sh --skip-foundry --skip-entra
 5. **Phase 5:** 注册 MCP Tool 到 AI Agent
 6. **Phase 6:** 生成本地 `.env` 文件
 
-> 更多选项见 `bash scripts/init_new_account.sh --help`
+> 脚本运行**完成后**，还需在 AI Foundry Portal 中完成 GitHub MCP Tool 和 Vault 的配置（见下文）。
 
 ---
 
@@ -218,7 +224,6 @@ micro-agent/
 │
 ├── .env.example                     # 环境变量模板
 ├── .funcignore                      # Functions 部署排除规则
-├── .flask_secret                    # 本地开发 session 密钥（暂用）
 └── README.md                        # 本文档
 ```
 
@@ -285,6 +290,82 @@ ASP.NET Core 后端 + React 前端，使用 MSAL PKCE 流进行 OAuth 认证。�
 
 ---
 
+## AI Foundry Portal 配置
+
+以下配置需要在 [ai.azure.com](https://ai.azure.com) 门户中手动完成，不会通过脚本自动化创建。
+
+### GitHub MCP Tool
+
+Agent 可以通过 MCP 协议调用 GitHub API，实现代码仓库操作、Issue 管理、PR 审查等功能。
+
+**配置步骤：**
+
+1. 进入 AI Foundry → Project → Agents → 选中你的 Agent → **Agents** → **Tools** 选项卡
+2. 点击 **+ Add** → 选择 **MCP tool**（或 **Connection** 类型）
+3. 填写以下信息：
+   - **Name**: `github-mcp`（或自定义名称）
+   - **Server URL**: 填入 GitHub MCP Server 地址
+     - 使用 AI Foundry 内置的 GitHub 连接器，或自托管 GitHub MCP Server
+   - **Authentication**: 选择对应的凭证/Vault 连接
+
+**认证方式：**
+
+| 方式 | 说明 | 适用场景 |
+|------|------|----------|
+| GitHub Personal Access Token (PAT) | `classic` 或 `fine-grained` token，需要 `repo`、`issues`、`pull_requests` 等权限 | 个人账号 |
+| GitHub App | 通过 GitHub App 安装到组织，使用 JWT 认证 | 组织级 / 生产环境 |
+
+> GitHub PAT 需要存储在 Vault 中，Agent 运行时从 Vault 读取凭证。
+
+### Vault（连接/凭证管理）
+
+AI Foundry 使用 **Vault**（即 Connections / Azure Key Vault）来安全存储 Agent 运行时需要的敏感凭证。
+
+**配置步骤：**
+
+1. 进入 AI Foundry → Project → **Settings** → **Connections**
+2. 点击 **+ Create** → 选择凭证类型
+3. 常见的 Vault 条目：
+
+| 名称 | 类型 | 用途 |
+|------|------|------|
+| `github-pat` | API Key | GitHub MCP Tool 的 PAT 凭证 |
+| `mcp-server-auth` | API Key | 调用自托管 MCP Server 的 OAuth scope / token |
+| `azure-openai` | Azure OpenAI | 模型部署连接（通常自动创建） |
+
+4. 也可以在 Azure Portal 中直接使用 **Key Vault** 创建 Secret，然后在 AI Foundry Connections 中关联
+
+**Vault 在 Agent 调用链中的位置：**
+
+```
+Agent 执行 Tool 调用
+    │
+    ├─ 需要外部 API 凭证？
+    │   ├─ 否 → 直接调用
+    │   └─ 是 → 从 Vault 读取对应凭证
+    │           │
+    │           ├─ GitHub PAT → GitHub API
+    │           ├─ MCP Server Auth → 自托管 MCP Server
+    │           └─ 其他 API Key → 对应服务
+    │
+    └─ Agent 将工具结果返回给用户
+```
+
+### 在迁移脚本后补充配置
+
+运行 `bash scripts/init_new_account.sh --env-name production` 之后，按以下顺序补充 Portal 配置：
+
+```mermaid
+flowchart LR
+    A[运行 init_new_account.sh] --> B[ai.azure.com 登录]
+    B --> C[验证 Agent 已创建]
+    C --> D[Vault: 创建 GitHub PAT 连接]
+    D --> E[Agent: 添加 GitHub MCP Tool]
+    E --> F[测试 Agent 可调用 GitHub API]
+```
+
+---
+
 ## 部署到 Azure
 
 ### 一键部署（推荐）
@@ -293,7 +374,7 @@ ASP.NET Core 后端 + React 前端，使用 MSAL PKCE 流进行 OAuth 认证。�
 bash scripts/init_new_account.sh
 ```
 
-脚本会交互式引导完成全部 Azure 资源创建。
+脚本会交互式引导完成全部 Azure 资源创建。部署完成后需补充 Portal 配置（见上方"AI Foundry Portal 配置"章节）。
 
 ### 分步部署
 
@@ -348,6 +429,10 @@ python scripts/register_agent_tool.py \
   --agent-name <agent-name>
 ```
 
+此外，还需在 [ai.azure.com](https://ai.azure.com) Portal 中补充：
+- Vault 中创建 GitHub PAT 连接
+- Agent Toolset 中添加 GitHub MCP Tool
+
 ---
 
 ## 迁移到新 Azure 账号
@@ -368,7 +453,12 @@ python scripts/register_agent_tool.py \
    - 在 [https://ai.azure.com](https://ai.azure.com) 手动创建 Agent
    - 对 App Registration 授予 Admin Consent（如需）
 
-4. 验证：
+4. 脚本运行完成后，补充 Portal 配置：
+   - **Vault**: 创建 GitHub PAT 凭证连接
+   - **Agent Toolset**: 添加 GitHub MCP Tool
+   - 验证 Tool 连通性
+
+5. 验证：
    ```bash
    # 检查 MCP Server
    curl -N https://func-mcp-<env>.azurewebsites.net/sse
