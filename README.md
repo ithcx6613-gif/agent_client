@@ -1,8 +1,10 @@
 # micro-agent
 
-**Azure AI Foundry Agent Demo** — 一个基于 Azure AI Foundry 的 Agent 框架演示项目。
+**Azure AI Foundry Agent Demo** — 基于 Azure AI Foundry 构建的 Agent 框架，包含 Agent 客户端（.NET/React）和 MCP Tool Server（Python FastMCP）。
 
 ![Python](https://img.shields.io/badge/Python-3.13+-blue)
+![.NET](https://img.shields.io/badge/.NET-9.0-purple)
+![Azure Functions](https://img.shields.io/badge/Azure%20Functions-v4-blue)
 ![Azure AI Foundry](https://img.shields.io/badge/Azure%20AI%20Foundry-Agent-blue)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
@@ -10,49 +12,81 @@
 
 ## 项目概述
 
-本项目演示了如何在 Azure AI Foundry 上构建一个完整的 Agent 应用，包含三个核心组件：
+本项目演示了如何在 Azure AI Foundry 上构建一个完整的 Agent 应用，包含两个核心服务和一个初始化工具：
 
-| 组件 | 目录 | 说明 |
-|------|------|------|
-| **Agent Client** | `agent_client/` | Flask Web 应用 — 用户通过 OAuth 登录后，与 AI Foundry Agent 对话 |
-| **MCP Server** | `mcp_server/` | FastMCP 服务 — 为 Agent 提供可调用的 Tool (snippet管理、用户信息等) |
-| **Setup Scripts** | `scripts/` | Azure AD 配置脚本 — 自动创建 App Registration、Identity 等基础设施 |
+| 组件 | 目录 | 部署目标 | 说明 |
+|------|------|----------|------|
+| **Agent Client** | `agent_client/` | Container App | .NET/React Web 应用 — 用户通过 OAuth (MSAL) 登录后，与 AI Foundry Agent 对话 |
+| **MCP Server** | `mcp_server/` | Function App | Python FastMCP 服务 — 为 Agent 提供可调用的 Tool（snippet 管理、用户信息等） |
+| **Setup Script** | `scripts/` | 本地运行 | 一键初始化/迁移脚本，创建全部 Azure 资源 |
 
 ### 架构
 
 ```
 用户浏览器
    │
-   ├─ OAuth 登录 ──→ Microsoft Entra ID
+   ├─ MSAL (PKCE) OAuth 登录 ──→ Microsoft Entra ID
    │
    ▼
-Agent Client (Flask, :5000)
+Agent Client (Container App, :8080)
+   │  ASP.NET Core Backend + React Frontend
    │
-   ├─ 用户 OAuth Token → Azure AI Foundry Agent API
+   ├─ 用户 JWT → AI Foundry Agent API (Responses API / SSE)
    │
    ▼
 AI Foundry Agent
    │
-   ├─ MCP Tool 调用 ──→ MCP Server (FastMCP, :8000)
-   │                       │
-   │                       ├─ hello_mcp / server_info
-   │                       ├─ save_snippet / get_snippet / list_snippets
-   │                       ├─ whoami / get_current_user (OBO → Graph)
-   │                       └─ batch_save_snippets
+   ├─ MCP Tool 调用 (SSE) ──→ MCP Server (Function App)
+   │                           │
+   │                           ├─ hello_mcp / server_info
+   │                           ├─ save_snippet / get_snippet / list_snippets
+   │                           ├─ whoami / get_current_user (OBO → Graph)
+   │                           └─ batch_save_snippets
+   │
+   ├─ (User-Assigned MI) → Azure Container Registry / Storage
    │
    └─ (OBO Token Exchange) → Microsoft Graph API
 ```
 
 ---
 
-## 快速开始
+## 快速开始 — 新账号初始化
+
+如果你需要将项目迁移到新 Azure 账号/订阅，使用一键初始化脚本：
+
+```bash
+# 预览将要创建的资源
+bash scripts/init_new_account.sh --dry-run
+
+# 交互式全自动创建
+bash scripts/init_new_account.sh
+
+# 跳过已存在的部分
+bash scripts/init_new_account.sh --skip-foundry --skip-entra
+```
+
+脚本会依次进行：
+1. **Phase 1:** 创建 Entra App Registration（Agent Client SPA + MCP Server API）
+2. **Phase 2:** 创建 AI Foundry Hub（AI Services 资源），提示在门户创建 Project/Agent
+3. **Phase 3:** 使用 `azd up` 部署 Container App（Agent Client 前后端）
+4. **Phase 4:** 创建 Function App 并部署 MCP Server
+5. **Phase 5:** 注册 MCP Tool 到 AI Agent
+6. **Phase 6:** 生成本地 `.env` 文件
+
+> 更多选项见 `bash scripts/init_new_account.sh --help`
+
+---
+
+## 本地开发
 
 ### 前置条件
 
-- Python 3.13+
-- Azure 订阅 + [Azure AI Foundry hub/project](https://ai.azure.com)
-- 已注册的 [Agent Identity Blueprint](https://learn.microsoft.com/entra/identity/agents/agent-identity)
-- Azure CLI (`az`) 已登录
+- Python 3.12+
+- .NET 9.0 SDK（仅开发 Agent Client 时需要）
+- Node.js 18+（仅开发前端时需要）
+- Azure CLI (`az`)，已 `az login`
+- Azure Functions Core Tools (`func`)
+- Azure Developer CLI (`azd`)
 
 ### 环境准备
 
@@ -60,89 +94,73 @@ AI Foundry Agent
 # 1. 克隆项目
 git clone <repo-url> && cd micro-agent
 
-# 2. 创建虚拟环境并安装依赖
+# 2. 创建 Python 虚拟环境（MCP Server）
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-# 3. 配置环境变量
+# 3. 从模板复制环境变量
 cp .env.example .env
-# 编辑 .env 填入实际值（或运行 setup 脚本自动生成）
+# 编辑 .env 填入实际值，或运行 init_new_account.sh 自动生成
 ```
 
-### 配置 Azure AD App Registration
+### 配置 .env
 
-方式一：自动创建（推荐）
+最小配置（由 `init_new_account.sh` 自动填充）：
 
-```bash
-# 查看将要创建的资源
-python scripts/setup_app_registration.py --dry-run
-
-# 自动创建两个 App Registration + 客户端密钥
-python scripts/setup_app_registration.py \
-    --tenant-id $(az account show --query tenantId -o tsv)
+```ini
+TENANT_ID=your-tenant-id
+CLIENT_ID=your-agent-client-app-id
+CLIENT_SECRET=your-agent-client-app-secret
+MCP_SERVER_CLIENT_ID=your-mcp-server-app-id
+MCP_SERVER_CLIENT_SECRET=your-mcp-server-app-secret
+FOUNDRY_ACCOUNT_NAME=your-ai-foundry-hub-name
+FOUNDRY_PROJECT_NAME=your-project-name
+FOUNDRY_RESOURCE_GROUP=rg-ai-foundry-dev
+AGENT_NAME=your-agent-name
+AGENT_VERSION=latest
+REDIRECT_URI=http://localhost:5000/callback
+SCOPE=https://ai.azure.com/.default
 ```
 
-方式二：手动配置
-
-1. 在 [Azure Portal > App registrations](https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps) 中：
-   - 创建 **Agent Client App** (micro-agent-client)
-     - Platform: Web, Redirect URI: `http://localhost:5000/callback`
-     - API Permissions: `https://ai.azure.com/.default` + `Microsoft Graph User.Read`
-     - 生成 client secret
-   - 创建 **MCP Server App** (micro-agent-mcp-server)
-     - Expose an API → Add scope `access_as_user`
-     - Pre-authorize 上面的 client app
-2. 将值填入 `.env`
-
-### 设置 Agent Identity
+### 启动 MCP Server（本地）
 
 ```bash
-# 为 MCP Server 创建 User-Assigned Managed Identity + Federated Credential
-chmod +x scripts/setup_agent_identity.sh
-./scripts/setup_agent_identity.sh \
-    -t $(az account show --query tenantId -o tsv) \
-    -s $(az account show --query id -o tsv) \
-    -g <your-resource-group> \
-    -a <mcp-server-app-client-id>
+source .venv/bin/activate
 
-# 创建 Agent Identity Blueprint
-python scripts/setup_agent_identity.py \
-    --mi-client-id <managed-identity-client-id>
-```
-
-### 启动服务
-
-#### 启动 Agent Client
-
-```bash
-# 启动 Flask Web 应用 (OAuth 登录 + Agent 对话)
-python -m agent_client.client_app
-# → http://localhost:5000
-```
-
-#### 启动 MCP Server
-
-```bash
-# 启动 MCP Tool Server (SSE 传输)
+# SSE 模式（默认）
 python -m mcp_server
-# → http://localhost:8000 (SSE endpoint)
+# → http://localhost:8000 (SSE: /sse, 健康检查: /health)
+
+# Stdio 模式
+MCP_TRANSPORT=stdio python -m mcp_server
 ```
 
-也可以使用 stdio 传输模式:
+### 启动 Agent Client（本地）
+
+Agent Client 是 .NET/React 应用，位于 `agent_client/` 目录：
 
 ```bash
-MCP_TRANSPORT=stdio python -m mcp_server
+# 构建 .NET 后端
+cd agent_client/backend/WebApp.Api
+dotnet run
+# → http://localhost:8080
+
+# 另一个终端：启动 React 前端开发服务器
+cd agent_client/frontend
+npm install
+npm run dev
+# → http://localhost:5173
 ```
 
 ### 将 MCP Server 注册为 Agent Tool
 
 ```bash
-# 注册 MCP Server 到 AI Foundry Agent
+# 指向本地 MCP Server
 python scripts/register_agent_tool.py \
     --mcp-endpoint http://localhost:8000
 
-# 如需指定 OAuth scope:
+# 生产环境（带 OAuth scope）
 python scripts/register_agent_tool.py \
     --mcp-endpoint https://your-mcp-server.azurewebsites.net \
     --mcp-scope api://<mcp-server-app-id>/access_as_user
@@ -154,37 +172,53 @@ python scripts/register_agent_tool.py \
 
 ```
 micro-agent/
-├── agent_client/                    # Agent 客户端 (Flask)
-│   ├── __init__.py                  # 包入口
-│   ├── agent_client.py              # AIProjectClient + OpenAI 客户端封装
-│   ├── auth_helper.py               # MSAL OAuth 授权辅助
-│   ├── client_app.py                # Flask 应用 + 路由
-│   └── templates/
-│       └── index.html               # OAuth 登录 + 对话界面 UI
 │
-├── mcp_server/                      # MCP Server (FastMCP)
+├── agent_client/                    # Agent 客户端 (.NET/React)
+│   ├── backend/                     # ASP.NET Core 后端
+│   │   ├── WebApp.Api/              # API 服务（Program.cs, Models, Services）
+│   │   ├── WebApp.Api.Tests/        # 单元测试
+│   │   └── WebApp.sln               # 解决方案文件
+│   ├── frontend/                    # React 前端 (MSAL + Fluent UI)
+│   │   ├── src/                     # 源码（组件、状态管理、工具函数）
+│   │   ├── vite.config.ts           # Vite 构建配置
+│   │   └── nginx.conf              # 生产 Nginx 配置
+│   ├── infra/                       # Bicep 基础设施模板（azd 部署用）
+│   │   ├── main.bicep              # 主模板
+│   │   ├── main-infrastructure.bicep  # ACR + Container Apps 环境
+│   │   ├── main-app.bicep          # Container App + 环境变量
+│   │   └── entra-app.bicep         # Entra App Registration
+│   ├── deployment/                  # azd 钩子脚本
+│   │   ├── hooks/                   # predeploy / postprovision / preprovision
+│   │   ├── docker/                  # Dockerfile
+│   │   └── scripts/                 # 部署辅助脚本
+│   ├── azure.yaml                   # azd 配置文件
+│   └── ARCHITECTURE-FLOW.md         # 详细架构流程图
+│
+├── mcp_server/                      # MCP Server (Python FastMCP)
 │   ├── __init__.py
 │   ├── __main__.py                  # python -m mcp_server 入口
 │   ├── server.py                    # FastMCP 服务创建 + 工具注册
-│   ├── config.py                    # 环境配置加载
+│   ├── config.py                    # 环境配置加载（.env / 环境变量）
 │   ├── tools/
-│   │   ├── __init__.py
-│   │   ├── hello_tool.py           # hello_mcp / server_info 工具
-│   │   ├── snippet_tools.py        # 代码片段 CRUD 工具
-│   │   ├── user_info_tool.py       # 用户信息 / OBO Graph API 工具
-│   │   └── batch_tools.py          # 批量操作工具
+│   │   ├── hello_tool.py           # hello_mcp / server_info
+│   │   ├── snippet_tools.py        # 代码片段 CRUD
+│   │   ├── user_info_tool.py       # 用户信息 / OBO Graph API
+│   │   └── batch_tools.py          # 批量操作
 │   └── auth/
-│       ├── __init__.py
-│       └── obo_auth.py             # OBO Token 交换 + JWT 解码工具
+│       ├── entra_auth.py           # Entra JWT 验证中间件 (ASGI)
+│       └── obo_auth.py             # OBO Token 交换
+│
+├── function_app.py                  # Azure Functions ASGI 入口
+├── host.json                        # Azure Functions 配置
+├── requirements.txt                 # Python 依赖
 │
 ├── scripts/                         # 基础设施脚本
-│   ├── setup_app_registration.py    # 自动创建 Azure AD App Registration
-│   ├── setup_agent_identity.sh      # 创建 Managed Identity + Federated Credential
-│   ├── setup_agent_identity.py      # 创建 Agent Identity Blueprint
-│   └── register_agent_tool.py       # 注册 MCP Server 到 AI Foundry Agent
+│   ├── init_new_account.sh          # 一键初始化/迁移（推荐）
+│   └── register_agent_tool.py       # 注册 MCP Server 到 AI Agent
 │
-├── requirements.txt                 # Python 依赖
 ├── .env.example                     # 环境变量模板
+├── .funcignore                      # Functions 部署排除规则
+├── .flask_secret                    # 本地开发 session 密钥（暂用）
 └── README.md                        # 本文档
 ```
 
@@ -194,134 +228,172 @@ micro-agent/
 
 ### 1. Agent Client (`agent_client/`)
 
-用户通过浏览器访问 Flask Web 应用，使用 Microsoft 账号 OAuth 登录后，即可与 Azure AI Foundry Agent 对话。
+ASP.NET Core 后端 + React 前端，使用 MSAL PKCE 流进行 OAuth 认证。用户在浏览器中通过 Microsoft 账号登录后，与 AI Foundry Agent 对话。
 
-**核心流程：**
-
-1. **AuthHelper** 使用 MSAL ConfidentialClientApplication 发起 OAuth 授权码流程
-2. 用户登录 Microsoft Entra ID 并同意授权
-3. 回调接收授权码，兑换为 Access Token（scope: `https://ai.azure.com/.default`）
-4. **AgentClient** 持有该 Token，调用 AI Foundry Agent 的 Responses API
-5. 前端实时显示对话结果
-
-**端点：**
+**后端端点：**
 
 | 路由 | 方法 | 说明 |
 |------|------|------|
-| `/` | GET | 登录 / 对话页面 |
-| `/auth/login` | GET | 跳转到 Microsoft OAuth 授权页 |
-| `/auth/status` | GET | 检查当前登录状态 |
-| `/auth/logout` | POST | 退出登录 |
-| `/callback` | GET | OAuth 回调接收端 |
-| `/api/agent/check` | GET | 检查 Agent 连通性 |
-| `/api/ai/chat` | POST | 发送消息给 Agent |
+| `/api/chat/stream` | POST | SSE 流式对话（核心接口） |
+| `/api/health` | GET | 健康检查 |
+| `/api/agent` | GET | Agent 元数据 |
+| `/api/agent/info` | GET | Agent 配置信息 |
+| `/api/conversations` | GET | 会话管理 |
+| `/api/files/*` | GET | 文件下载 |
+
+**前端关键特性：**
+
+- MSAL PKCE OAuth + 托管标识双模式（开发/生产自动切换）
+- SSE 流式对话渲染（Markdown + 代码高亮）
+- MCP Tool 审批流程（用户可批准/拒绝 Tool 调用）
+- 会话管理、文件附件、语音输入、Markdown 导出
+- 基于 Fluent UI + react-copilot 构建
 
 ### 2. MCP Server (`mcp_server/`)
 
-基于 FastMCP 框架构建的 Tool Server，Agent 在对话中可以根据需要自动调用这些工具。
+基于 FastMCP 构建的 Tool Server，部署为 Azure Functions（ASGI 模式）。
 
 **工具清单：**
 
-| 工具 | 说明 | 来源参考 |
-|------|------|----------|
-| `hello_mcp` | 基础问候，确认服务运行 | FunctionsMcpTool |
-| `server_info` | 返回服务器版本和可用工具列表 | FunctionsMcpTool |
-| `save_snippet` | 保存代码片段 | FunctionsMcpTool - save_snippet |
-| `get_snippet` | 按名称获取片段 | FunctionsMcpTool - get_snippet |
-| `list_snippets` | 列出所有片段 | FunctionsMcpTool |
-| `delete_snippet` | 删除片段 | FunctionsMcpTool |
-| `get_snippet_with_metadata` | 获取片段 + 元数据 (JSON) | FunctionsMcpTool - get_snippet_with_metadata |
-| `whoami` | 从 Token 中提取用户身份 | FunctionsMcpTool - hello_tool_with_auth |
-| `get_current_user` | 通过 OBO 调用 Graph API 获取用户信息 | FunctionsMcpTool - hello_tool_with_auth |
-| `batch_save_snippets` | 批量保存 (JSON 数组输入) | FunctionsMcpTool - batch_save_snippets |
-| `batch_get_snippets` | 批量获取 (返回 JSON) | FunctionsMcpTool |
+| 工具 | 说明 |
+|------|------|
+| `hello_mcp` | 基础问候，确认服务运行 |
+| `server_info` | 服务器版本和可用工具列表 |
+| `save_snippet / get_snippet` | 代码片段 CRUD |
+| `list_snippets / delete_snippet` | 代码片段管理 |
+| `get_snippet_with_metadata` | 片段 + 元数据 (JSON) |
+| `whoami` | 从 Token 提取用户身份 |
+| `get_current_user` | OBO 调用 Graph API 获取用户信息 |
+| `batch_save_snippets / batch_get_snippets` | 批量操作 |
 
 **OBO (On-Behalf-Of) 认证流程：**
 
 当 Agent 调用 `get_current_user` 工具时：
+1. Agent 将用户的 JWT 传递给 MCP Server
+2. MCP Server 用该 Token 向 Microsoft Graph 发起请求
+3. Graph 返回用户信息（displayName, email 等）
 
-1. Agent 将用户的 OAuth Token 传递给 MCP Server
-2. MCP Server 使用该 Token 向 Microsoft Graph 发起请求
-3. Graph 验证 Token 并返回用户信息（displayName, email 等）
-4. 工具结果返回给 Agent，Agent 继续与用户对话
+生产环境可启用托管标识 + Federated Identity Credential 实现真正的 OBO（参见 `mcp_server/auth/obo_auth.py`）。
 
-在生产部署中，配合 Azure Easy Auth + Managed Identity Federated Credential，可以使用真正的 OBO 流程：
-- Managed Identity 生成 client assertion
-- OnBehalfOfCredential 用用户 Token + assertion 交换 Graph Token
-- 详见 `mcp_server/auth/obo_auth.py`
+### 3. Entra Auth 中间件
 
-### 3. Setup Scripts (`scripts/`)
+`function_app.py` 将 FastMCP 包装为 ASGI 应用，并添加 `EntraAuthMiddleware`：
 
-| 脚本 | 作用 |
-|------|------|
-| `setup_app_registration.py` | 自动创建 Agent Client 和 MCP Server 两个 App Registration |
-| `setup_agent_identity.sh` | 创建 User-Assigned Managed Identity + Federated Identity Credential |
-| `setup_agent_identity.py` | 创建 Agent Identity Blueprint (Entra ID) |
-| `register_agent_tool.py` | 将 MCP Server 注册到 AI Foundry Agent 的 Tool Definition |
+- 所有 SSE 连接和工具调用请求均需携带有效的 Entra JWT（Bearer token）
+- 从 JWT 的 `sub` / `upn` 声明提取用户身份
+- 可选择开启/关闭（通过 `MCP_AUTH_ENABLED` 环境变量）
 
 ---
 
 ## 部署到 Azure
 
-### MCP Server 部署
-
-MCP Server 可以部署到 Azure Container Apps、Azure App Service 或 Azure Functions：
+### 一键部署（推荐）
 
 ```bash
-# 使用 Azure Developer CLI 部署
+bash scripts/init_new_account.sh
+```
+
+脚本会交互式引导完成全部 Azure 资源创建。
+
+### 分步部署
+
+#### 部署 MCP Server（Azure Functions）
+
+```bash
+# 创建资源组 + Storage + Function App
+az group create --name rg-mcp-server-dev --location eastus2
+az storage account create --name mcpstoredev --resource-group rg-mcp-server-dev --location eastus2 --sku Standard_LRS
+az functionapp create --name func-mcp-dev --resource-group rg-mcp-server-dev --storage-account mcpstoredev --consumption-plan-location eastus2 --runtime python --runtime-version 3.12 --functions-version 4 --os-type Linux
+
+# 设置环境变量
+az functionapp config appsettings set \
+  --name func-mcp-dev --resource-group rg-mcp-server-dev \
+  --settings \
+    TENANT_ID=<tenant-id> \
+    MCP_SERVER_CLIENT_ID=<mcp-app-id> \
+    MCP_AUTH_AUDIENCE=api://<mcp-app-id> \
+    MCP_AUTH_ENABLED=true \
+    MCP_SERVER_HOST=0.0.0.0 \
+    MCP_SERVER_PORT=8000 \
+    MCP_TRANSPORT=sse
+
+# 部署代码
+cd <repo-root>
+func azure functionapp publish func-mcp-dev --python
+```
+
+#### 部署 Agent Client（Azure Container Apps）
+
+```bash
+cd agent_client
+azd env new dev --location eastus2
+azd env set ENTRA_TENANT_ID <tenant-id>
+azd env set AI_AGENT_ENDPOINT <foundry-project-endpoint>
+azd env set AI_AGENT_ID <agent-name>
 azd up
 ```
 
-部署后更新 MCP Server 配置：
+### 部署后配置
+
 ```bash
+# 更新 Entra App Redirect URI（加入 Container App 的域名）
+az ad app update \
+  --id <agent-client-app-id> \
+  --web-redirect-uris "http://localhost:5000/callback" "https://<container-app-url>/callback"
+
+# 注册 MCP Tool
 python scripts/register_agent_tool.py \
-    --mcp-endpoint https://your-mcp-server.azurewebsites.net \
-    --mcp-scope api://<mcp-server-app-id>/access_as_user
-```
-
-### Agent Client 部署
-
-```bash
-# 更新 REDIRECT_URI 为生产地址
-# 部署到 Azure App Service / Container Apps
-# 设置 GitHub Actions 或 Azure DevOps CI/CD
+  --mcp-endpoint https://func-mcp-dev.azurewebsites.net/sse \
+  --mcp-scope api://<mcp-server-app-id>/access_as_user \
+  --agent-name <agent-name>
 ```
 
 ---
 
-## 参考项目
+## 迁移到新 Azure 账号
 
-本项目参考了 [remote-mcp-functions-python](https://github.com/Azure-Samples/remote-mcp-functions-python) 的架构和工具设计思路，将其 MCP Tool Server 的模式移植到 FastMCP 框架中，并与 Azure AI Foundry Agent 集成。
+如果你的当前账号只有只读权限，需要在新的账号中重建整套环境：
 
-关键参考：
-- **FunctionsMcpTool** → `mcp_server/tools/*.py` — MCP Tool 定义模式
-- **FunctionsMcpTool/hello_tool_with_auth** → OBO 认证流程
-- **infra/app/entra.bicep** → App Registration 配置 (Bicep → Python 脚本)
-- Architecture: Remote MCP with built-in authentication via Microsoft Entra ID
+1. 在新账号中登录 Azure CLI：
+   ```bash
+   az login --tenant <new-tenant-id>
+   ```
+
+2. 运行一键初始化脚本：
+   ```bash
+   bash scripts/init_new_account.sh --env-name production
+   ```
+
+3. 脚本运行期间需要：
+   - 在 [https://ai.azure.com](https://ai.azure.com) 手动创建 Agent
+   - 对 App Registration 授予 Admin Consent（如需）
+
+4. 验证：
+   ```bash
+   # 检查 MCP Server
+   curl -N https://func-mcp-<env>.azurewebsites.net/sse
+   # 检查 Container App
+   curl https://<container-app-url>/api/health
+   ```
 
 ---
 
-## 开发
+## 开发指南
 
 ### 验证 Import
 
 ```bash
 source .venv/bin/activate
 python -c "from mcp_server.server import create_app; app = create_app(); print('OK:', type(app).__name__)"
-python -c "from agent_client import AgentClient, AuthHelper; print('OK:', AgentClient.__name__, AuthHelper.__name__)"
 ```
 
 ### 测试 MCP Server
 
 ```bash
-# 启动服务器
 python -m mcp_server &
 sleep 2
-
-# 用 curl 测试 SSE 连接
 curl -N http://localhost:8000/sse
-
-# 或用 MCP Inspector 测试
+# 或使用 MCP Inspector
 npx @modelcontextprotocol/inspector http://localhost:8000
 ```
 
@@ -329,7 +401,15 @@ npx @modelcontextprotocol/inspector http://localhost:8000
 
 ```bash
 pip install ruff
-ruff check mcp_server/ agent_client/ scripts/
+ruff check mcp_server/ scripts/
+```
+
+### Azure Functions 本地调试
+
+```bash
+func start
+# → http://localhost:7071 (ASGI SSE 端点)
+# → http://localhost:7071/health
 ```
 
 ---
@@ -337,3 +417,9 @@ ruff check mcp_server/ agent_client/ scripts/
 ## 许可证
 
 MIT
+
+## 参考项目
+
+- [remote-mcp-functions-python](https://github.com/Azure-Samples/remote-mcp-functions-python) — MCP Tool Server 架构参考
+- FunctionsMcpTool → `mcp_server/tools/*.py` — Tool 定义模式
+- FunctionsMcpTool/hello_tool_with_auth → OBO 认证流程
