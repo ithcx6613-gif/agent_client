@@ -119,8 +119,17 @@ confirm_step() {
   case "$response" in [yY]|[yY][eE][sS]) return 0 ;; *) echo "  ⏭️  跳过"; return 1 ;; esac
 }
 
+# macOS 兼容的 sed
+local_sed() {
+  local key="$1" val="$2" file="$3"
+  if [[ "$(uname)" == "Darwin" ]]; then
+    sed -i '' "s|^${key}=.*|${key}=${val}|" "$file" 2>/dev/null || true
+  else
+    sed -i "s|^${key}=.*|${key}=${val}|" "$file" 2>/dev/null || true
+  fi
+}
+
 # ═══════════════════════════════════════════════════════════════════
-# Phase 0: 前置检查
 # ═══════════════════════════════════════════════════════════════════
 step "Phase 0: 前置检查"
 
@@ -217,6 +226,34 @@ if ! $SKIP_ENTRA; then
       warn "  Client Secret 生成失败（只读账号），请在 Azure 门户手动创建"
       AGENT_CLIENT_SECRET="<需在门户创建>"
     fi
+
+    # 配置 requiredResourceAccess（API 权限正式注册）
+    info "  配置 requiredResourceAccess（API 权限声明）..."
+    AGENT_CLIENT_OBJ_ID=$(az ad app show --id "$AGENT_CLIENT_ID" --query id -o tsv 2>/dev/null || echo "")
+    if [[ -n "$AGENT_CLIENT_OBJ_ID" ]]; then
+      # Azure AI Foundry (https://ai.azure.com/.default) + Microsoft Graph User.Read
+      RESOURCE_ACCESS_BODY=$(cat <<RAEOF
+{
+  "requiredResourceAccess": [
+    {
+      "resourceAppId": "18a66f5f-dbdf-4c17-9dd7-1634712a9cbe",
+      "resourceAccess": [
+        {"id": "1a7925b5-f871-417a-9b8b-303f9f29fa10", "type": "Scope"}
+      ]
+    },
+    {
+      "resourceAppId": "00000003-0000-0000-c000-000000000000",
+      "resourceAccess": [
+        {"id": "e1fe6dd8-ba31-4d61-89e7-88639da4683d", "type": "Scope"}
+      ]
+    }
+  ]
+}
+RAEOF
+)
+      az rest --method PATCH         --uri "https://graph.microsoft.com/v1.0/applications/${AGENT_CLIENT_OBJ_ID}"         --headers "Content-Type=application/json"         --body "$RESOURCE_ACCESS_BODY" 2>/dev/null ||         warn "  requiredResourceAccess 设置失败，可在门户手动配置"
+      info "  ✅ requiredResourceAccess 已配置"
+    fi
   else
     AGENT_CLIENT_ID="<待创建: $AGENT_CLIENT_APP_NAME>"
   fi
@@ -248,6 +285,31 @@ if ! $SKIP_ENTRA; then
         --set "api.oauth2PermissionScopes=[{\"id\":\"${SCOPE_ID}\",\"value\":\"access_as_user\",\"type\":\"User\",\"isEnabled\":true,\"userConsentDisplayName\":\"Access MCP Server as user\",\"userConsentDescription\":\"Allows the app to access MCP Server on your behalf\"}]"
     fi
 
+      # Pre-authorize Agent Client SPA（允许 SPA 免用户同意调用 MCP Server API）
+      if [[ -n "${AGENT_CLIENT_ID:-}" && "$AGENT_CLIENT_ID" != "<"* ]]; then
+        info "  配置 preAuthorizedApplications..."
+        MCP_SERVER_OBJ_ID=$(az ad app show --id "$MCP_SERVER_CLIENT_ID" --query id -o tsv 2>/dev/null || echo "")
+        if [[ -n "$MCP_SERVER_OBJ_ID" ]]; then
+          PREAUTH_BODY=$(cat <<PAEOF
+{
+  "api": {
+    "oauth2PermissionScopes": [{"id":"${SCOPE_ID}","value":"access_as_user","type":"User","isEnabled":true,"userConsentDisplayName":"Access MCP Server as user","userConsentDescription":"Allows the app to access MCP Server on your behalf"}],
+    "preAuthorizedApplications": [
+      {
+        "appId": "${AGENT_CLIENT_ID}",
+        "permissionIds": ["${SCOPE_ID}"]
+      }
+    ]
+  }
+}
+PAEOF
+)
+          az rest --method PATCH             --uri "https://graph.microsoft.com/v1.0/applications/${MCP_SERVER_OBJ_ID}"             --headers "Content-Type=application/json"             --body "$PREAUTH_BODY" 2>/dev/null ||             warn "  preAuthorizedApplications 设置失败，可在门户手动配置"
+          info "  ✅ Agent Client 已预授权调用 MCP Server API"
+        fi
+      fi
+
+
     # 生成 Secret
     MCP_SERVER_CLIENT_SECRET=$(az ad app credential reset \
       --id "$MCP_SERVER_CLIENT_ID" \
@@ -258,6 +320,27 @@ if ! $SKIP_ENTRA; then
       warn "  MCP Server Secret 生成失败，请在 Azure 门户手动创建"
       MCP_SERVER_CLIENT_SECRET="<需在门户创建>"
     fi
+
+    # 配置 MCP Server 的 requiredResourceAccess（Azure ML，用于 OBO 场景）
+    info "  配置 MCP Server requiredResourceAccess..."
+    MCP_SERVER_OBJ_ID="${MCP_SERVER_OBJ_ID:-$(az ad app show --id "$MCP_SERVER_CLIENT_ID" --query id -o tsv 2>/dev/null || echo "")}"
+    if [[ -n "$MCP_SERVER_OBJ_ID" ]]; then
+      MCP_RESOURCE_ACCESS_BODY=$(cat <<MRAEOF
+{
+  "requiredResourceAccess": [
+    {
+      "resourceAppId": "18a66f5f-dbdf-4c17-9dd7-1634712a9cbe",
+      "resourceAccess": [
+        {"id": "1a7925b5-f871-417a-9b8b-303f9f29fa10", "type": "Scope"}
+      ]
+    }
+  ]
+}
+MRAEOF
+)
+      az rest --method PATCH         --uri "https://graph.microsoft.com/v1.0/applications/${MCP_SERVER_OBJ_ID}"         --headers "Content-Type=application/json"         --body "$MCP_RESOURCE_ACCESS_BODY" 2>/dev/null ||         warn "  MCP Server requiredResourceAccess 设置失败，可在门户手动配置"
+      info "  ✅ MCP Server requiredResourceAccess 已配置"
+    fi
   else
     MCP_SERVER_CLIENT_ID="<待创建: $MCP_SERVER_APP_NAME>"
   fi
@@ -266,6 +349,52 @@ if ! $SKIP_ENTRA; then
   info "  ✅ Entra App Registrations 就绪"
   info "    Agent Client ID:     $AGENT_CLIENT_ID"
   info "    MCP Server ID:       $MCP_SERVER_CLIENT_ID"
+
+  # ── 1c: Admin Consent — 授予租户级授权 ────────────────────────
+  echo ""
+  info "1c. 授予租户级 Admin Consent..."
+  echo ""
+  info "  Agent Client App 需要以下 Delegated Permission 的管理员同意："
+  info "    - Azure AI Foundry (https://ai.azure.com): user_impersonation"
+  info "    - Microsoft Graph: User.Read"
+  echo ""
+
+  if ! $DRY_RUN && confirm_step "立即授予 Admin Consent（需拥有 Global Admin / Privileged Role Admin 权限）?"; then
+    # Azure Machine Learning Services SP
+    AML_SP_ID=$(az ad sp show --id "18a66f5f-dbdf-4c17-9dd7-1634712a9cbe" --query id -o tsv 2>/dev/null || echo "")
+    # Microsoft Graph SP
+    GRAPH_SP_ID=$(az ad sp show --id "00000003-0000-0000-c000-000000000000" --query id -o tsv 2>/dev/null || echo "")
+    # Agent Client SP
+    CLIENT_SP_ID=$(az ad sp show --id "$AGENT_CLIENT_ID" --query id -o tsv 2>/dev/null || echo "")
+
+    if [[ -n "$AML_SP_ID" && -n "$CLIENT_SP_ID" ]]; then
+      info "  授予 Azure AI Foundry user_impersonation..."
+      az rest --method POST         --uri "https://graph.microsoft.com/v1.0/oauth2PermissionGrants"         --headers "Content-Type=application/json"         --body "{\"clientId\":\"${CLIENT_SP_ID}\",\"consentType\":\"AllPrincipals\",\"resourceId\":\"${AML_SP_ID}\",\"scope\":\"user_impersonation\"}" 2>/dev/null ||         warn "  Azure ML 授权失败（可能已存在），可在门户手动操作"
+    else
+      warn "  无法找到 Azure Machine Learning 服务主体，跳过自动授权"
+    fi
+
+    if [[ -n "$GRAPH_SP_ID" && -n "$CLIENT_SP_ID" ]]; then
+      info "  授予 Microsoft Graph User.Read..."
+      az rest --method POST         --uri "https://graph.microsoft.com/v1.0/oauth2PermissionGrants"         --headers "Content-Type=application/json"         --body "{\"clientId\":\"${CLIENT_SP_ID}\",\"consentType\":\"AllPrincipals\",\"resourceId\":\"${GRAPH_SP_ID}\",\"scope\":\"User.Read\"}" 2>/dev/null ||         warn "  Graph 授权失败（可能已存在），可在门户手动操作"
+    fi
+
+    info "  ✅ Admin Consent 已完成"
+  fi
+
+  if $DRY_RUN; then
+    info "[DRY-RUN] Phase 1 计划:"
+    echo "    创建 Agent Client SPA App - ${AGENT_CLIENT_APP_NAME}"
+    echo "      - Redirect URI: ${AGENT_CLIENT_REDIRECT_URI}"
+    echo "      - API: AI Foundry + Graph User.Read"
+    echo "      - requiredResourceAccess 注册"
+    echo "    创建 MCP Server App - ${MCP_SERVER_APP_NAME}"
+    echo "      - Expose: access_as_user scope"
+    echo "      - Pre-authorize Agent Client"
+    echo "      - requiredResourceAccess: Azure ML"
+    echo "    Admin Consent: 两个 API 的租户级授权"
+  fi
+
 fi
 
 # ═══════════════════════════════════════════════════════════════════
@@ -509,11 +638,15 @@ if ! $SKIP_FUNCTION; then
 }
 EOF
       )
-      run_az rest --method POST \
-        --uri "https://graph.microsoft.com/v1.0/applications(appId='${MCP_SERVER_CLIENT_ID}')/federatedIdentityCredentials" \
-        --headers "Content-Type=application/json" \
-        --body "$FIC_BODY" 2>/dev/null || \
-        warn "  FIC 创建失败（可能已存在），可在门户手动创建"
+                              ficAppId="${MCP_SERVER_CLIENT_ID}"
+      MCP_APP_OBJ_ID=$(az ad app show --id "$MCP_SERVER_CLIENT_ID" --query id -o tsv 2>/dev/null || echo "")
+      if [[ -n "$MCP_APP_OBJ_ID" ]]; then
+        run_az rest --method POST \
+          --uri "https://graph.microsoft.com/v1.0/applications/${MCP_APP_OBJ_ID}/federatedIdentityCredentials" \
+          --headers "Content-Type=application/json" \
+          --body "$FIC_BODY" 2>/dev/null || \
+          warn "  FIC 创建失败（可能已存在），可在门户手动创建"
+      fi
     fi
   fi
 
@@ -658,16 +791,6 @@ SCOPE=https://ai.azure.com/.default
 EOF
   fi
 
-  # macOS 兼容的 sed
-  local_sed() {
-    local key="$1" val="$2" file="$3"
-    if [[ "$(uname)" == "Darwin" ]]; then
-      sed -i '' "s|^${key}=.*|${key}=${val}|" "$file" 2>/dev/null || true
-    else
-      sed -i "s|^${key}=.*|${key}=${val}|" "$file" 2>/dev/null || true
-    fi
-  }
-
   # 代入实际值
   [[ -n "$AZ_TENANT_ID" ]] && local_sed "TENANT_ID" "$AZ_TENANT_ID" "$ENV_FILE"
   [[ -n "$AGENT_CLIENT_ID" && "$AGENT_CLIENT_ID" != "<"* ]] && local_sed "CLIENT_ID" "$AGENT_CLIENT_ID" "$ENV_FILE"
@@ -805,7 +928,24 @@ CONEOF
 
   info "  Vault & GitHub MCP Tool 配置完成"
   info "    Key Vault:         ${VAULT_NAME}"
-  info "    Connection:        ${VAULT_CONNECTION_NAME:-<需在 Portal 创建>}"
+  echo ""
+
+  # ---- 更新 .env 中的 Vault 配置 ----
+  ENV_FILE="$REPO_ROOT/.env"
+  if [[ -f "$ENV_FILE" ]]; then
+    info "  更新 .env Vault 配置..."
+    # 确保 vault 变量存在于 .env 中（追加如果不存在）
+    for var_name in VAULT_NAME VAULT_CONNECTION_NAME GITHUB_PAT_SECRET_NAME; do
+      if ! grep -q "^${var_name}=" "$ENV_FILE" 2>/dev/null; then
+        echo "${var_name}=" >> "$ENV_FILE"
+      fi
+    done
+    [[ -n "$VAULT_NAME" ]] && local_sed "VAULT_NAME" "$VAULT_NAME" "$ENV_FILE"
+    [[ -n "$VAULT_CONNECTION_NAME" ]] && local_sed "VAULT_CONNECTION_NAME" "$VAULT_CONNECTION_NAME" "$ENV_FILE"
+    [[ -n "$GITHUB_PAT_SECRET_NAME" ]] && local_sed "GITHUB_PAT_SECRET_NAME" "$GITHUB_PAT_SECRET_NAME" "$ENV_FILE"
+    info "  .env vault vars updated"
+  fi
+
 fi
 
 # ═══════════════════════════════════════════════════════════════════
@@ -819,7 +959,7 @@ echo ""
 echo "  环境:     ${ENV_NAME}"
 echo "  区域:     ${LOCATION}"
 echo "  租户:     ${AZ_TENANT_ID}"
-echo "  订阅:     ${AZ_SUBSCRIPTION_NAME} (${AZ_SUBSCRIPTION_ID})"
+echo "  订阅:     ${AZ_SUBSCRIPTION_NAME} - ${AZ_SUBSCRIPTION_ID}"
 echo ""
 
 banner "  📋 Entra App Registrations"
